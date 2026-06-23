@@ -16,15 +16,6 @@ const fmt = (ms: number) => {
 }
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 
-const reloadWith = (params: Record<string, string | null>) => {
-  const url = new URL(window.location.href)
-  for (const [k, v] of Object.entries(params)) {
-    if (v === null) url.searchParams.delete(k)
-    else url.searchParams.set(k, v)
-  }
-  window.location.href = url.toString()
-}
-
 const loadPos = (): { x: number; y: number } | null => {
   try {
     const s = localStorage.getItem(POS_KEY)
@@ -34,7 +25,15 @@ const loadPos = (): { x: number; y: number } | null => {
   }
 }
 
-export default function ReplayControls({ room }: { room: ReplayRoom }) {
+export default function ReplayControls({
+  room,
+  onSeek,
+  onRestart
+}: {
+  room: ReplayRoom
+  onSeek: (ms: number) => void
+  onRestart: () => void
+}) {
   const [, force] = useState(0)
   useEffect(() => {
     const id = setInterval(() => force((n) => (n + 1) % 1e6), 150)
@@ -72,12 +71,8 @@ export default function ReplayControls({ room }: { room: ReplayRoom }) {
     window.addEventListener("mouseup", onUp)
   }
 
-  const seek = (ms: number) => {
-    // Forward seeks fast-apply in place; backward needs a fresh decoder → reload at that offset.
-    if (room.seek(ms) === "reload") reloadWith({ startMs: String(Math.round(ms)) })
-  }
-  const restart = () => reloadWith({ startMs: null })
-
+  // Both directions reboot the scene at the target time (replay.tsx boot()), so seeking is in-page and
+  // never breaks sprites; the controls just report where to jump.
   const pct = room.totalMs ? Math.min(100, (room.currentMs / room.totalMs) * 100) : 0
   const posStyle = pos
     ? { left: pos.x, top: pos.y }
@@ -92,7 +87,7 @@ export default function ReplayControls({ room }: { room: ReplayRoom }) {
       <button
         className="bubbly blue rc-play"
         title={room.ended ? "Restart" : room.paused ? "Play" : "Pause"}
-        onClick={() => (room.ended ? restart() : room.togglePause())}
+        onClick={() => (room.ended ? onRestart() : room.togglePause())}
       >
         {room.ended ? "↻" : room.paused ? "▶" : "⏸"}
       </button>
@@ -103,7 +98,7 @@ export default function ReplayControls({ room }: { room: ReplayRoom }) {
         className="rc-track"
         onClick={(e) => {
           const r = e.currentTarget.getBoundingClientRect()
-          seek(((e.clientX - r.left) / r.width) * room.totalMs)
+          onSeek(((e.clientX - r.left) / r.width) * room.totalMs)
         }}
       >
         <div className="rc-fill" style={{ width: `${pct}%` }} />

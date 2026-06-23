@@ -55,28 +55,87 @@ export default function Replay() {
   const [ready, setReady] = useState(false)
   const [needFile, setNeedFile] = useState(false)
   const [playing, setPlaying] = useState(false)
+  const [seeking, setSeeking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [gen, setGen] = useState(0) // identifies the current boot → keys the mounted <Game/>
+  const [showGame, setShowGame] = useState(false) // unmounted between boots so the old scene is gone first
+  const [bootNonce, setBootNonce] = useState(0) // drives the step-2 (rebuild) effect, one per boot
   const initialized = useRef(false)
   const replayRoom = useRef<ReplayRoom | null>(null)
+  const manifestRef = useRef<ReplayManifest | null>(null)
+  const bootPausedRef = useRef(false)
+  const pendingBoot = useRef<{ atMs: number; paused: boolean; speed: number } | null>(null)
 
   const params = new URLSearchParams(window.location.search)
   const speed = Number(params.get("speed") ?? "1")
-  const startMs = Number(params.get("startMs") ?? "0") // set by a backward scrub (reload-based seek)
+  const startMs = Number(params.get("startMs") ?? "0") // optional deep-link start offset
 
   // Make the viewer read-only: dim the inert own-POV action controls and swallow their clicks.
   useEffect(installReadonlyGuard, [])
 
-  const loadManifest = (manifest: ReplayManifest) => {
-    const room = new ReplayRoom(manifest, { speed, startMs })
-    replayRoom.current = room
-    rooms.game = room as unknown as Room<GameState>
-    // Present the recording's viewer as the logged-in user so the page's "self" logic resolves.
-    dispatch(logIn({ uid: manifest.viewerUid, displayName: manifest.viewerUid } as User))
-    // Pre-set the spectated player so the renderer's map/board callbacks target the right player.
-    const self = room.state?.players?.get(manifest.viewerUid)
-    if (self) dispatch(setPlayer(self))
-    setReady(true)
+  // Boot (or, on a seek, reboot) the viewer at time `atMs`. We ALWAYS start from a fresh ReplayRoom +
+  // scene fast-forwarded to the target — the one render path known to be correct (it's how the carousel
+  // start works), so seeking never breaks board/combat sprites, and it's in-page (no reload), so a
+  // dropped-file replay survives a backward seek.
+  //
+  // Two steps, to avoid a Phaser lifecycle race (a new game booting while the old one's deferred
+  // destroy() is still in flight throws on the torn-down scene): step 1 here just stops the old room and
+  // unmounts <Game/> (its host cleanup destroys the old Phaser game); step 2 (the effect below) waits a
+  // beat for that teardown, then builds the fresh room and remounts. `isSeek` preserves play/pause+speed.
+  const boot = (atMs: number, isSeek: boolean) => {
+    if (!manifestRef.current) return
+    const prev = replayRoom.current
+    pendingBoot.current = {
+      atMs: Math.max(0, atMs),
+      paused: isSeek ? !!prev?.paused : false,
+      speed: prev?.getSpeed() ?? speed
+    }
+    prev?.pause() // stop the outgoing timer so it can't apply frames into the scene being torn down
+    setSeeking(isSeek)
+    setPlaying(false)
+    setShowGame(false) // unmount <Game/> → ReplayGameHost cleanup destroys the old Phaser game
+    setBootNonce((n) => n + 1)
   }
+
+  // Step 2 of boot: once <Game/> has unmounted, give Phaser a beat to finish its deferred teardown, then
+  // build the fresh room (and run the "self" dispatches now that no stale game components are mounted)
+  // and remount. Re-fires per boot via bootNonce.
+  useEffect(() => {
+    const job = pendingBoot.current
+    if (!job) return
+    let cancelled = false
+    const id = setTimeout(() => {
+      if (cancelled) return
+      const manifest = manifestRef.current
+      if (!manifest) return
+      const room = new ReplayRoom(manifest, { speed: job.speed, startMs: job.atMs })
+      replayRoom.current = room
+      rooms.game = room as unknown as Room<GameState>
+      // Present the recording's viewer as the logged-in user so the page's "self" logic resolves.
+      dispatch(logIn({ uid: manifest.viewerUid, displayName: manifest.viewerUid } as User))
+      // Pre-set the spectated player so the renderer's map/board callbacks target the right player.
+      const self = room.state?.players?.get(manifest.viewerUid)
+      if (self) dispatch(setPlayer(self))
+      bootPausedRef.current = job.paused
+      pendingBoot.current = null
+      setReady(true)
+      setShowGame(true)
+      setGen((g) => g + 1)
+    }, 150)
+    return () => {
+      cancelled = true
+      clearTimeout(id)
+    }
+  }, [bootNonce])
+
+  const loadManifest = (manifest: ReplayManifest) => {
+    manifestRef.current = manifest
+    boot(startMs, false)
+  }
+
+  // Controls callbacks: every seek (either direction) and restart reboots at the target — see boot().
+  const seekTo = (ms: number) => boot(ms, true)
+  const restart = () => boot(0, true)
 
   useEffect(() => {
     if (initialized.current) return
@@ -99,6 +158,9 @@ export default function Replay() {
   // starting the playback clock. Starting earlier (e.g. while the map/assets are still loading) makes
   // the wall-clock advance with nothing on screen — so when the scene finally draws, it has jumped
   // ahead. We gate on board + map existing AND the loader idle, and show a loading overlay meanwhile.
+  // After each (re)boot, wait for the fresh Phaser scene to be render-ready, then start playback. Reruns
+  // on every `gen` bump (initial load and each seek). We gate on the container belonging to the CURRENT
+  // room so we don't latch onto the scene we just tore down during a seek.
   useEffect(() => {
     if (!ready) return
     const room = replayRoom.current
@@ -114,16 +176,17 @@ export default function Replay() {
         if (gc.gameScene) gc.gameScene.spectate = true
       }
       room.startPlayback()
+      if (bootPausedRef.current) room.pause() // keep a paused scrub paused at the new time
       setPlaying(true)
     }
     const waitReady = () => {
       if (cancelled) return
       const gc = getGameContainer()
-      // Wait for the board (i.e. the scene's startGame ran). The loader is never fully idle in a game
-      // scene, so we don't gate on it; instead, once the board exists we give the initial map/assets a
-      // short grace to finish so playback doesn't open on a half-loaded scene. The 25s cap is a last
-      // resort for a very slow boot.
-      if (gc?.gameScene?.board) setTimeout(() => begin(gc), 2000)
+      const isCurrent = gc?.room === (room as unknown as Room<GameState>)
+      // Wait for the current room's board (its startGame ran). The loader is never fully idle in a game
+      // scene, so we don't gate on it; once the board exists we give the map/assets a short grace so
+      // playback doesn't open on a half-loaded scene. The 25s cap is a last resort for a very slow boot.
+      if (isCurrent && gc?.gameScene?.board) setTimeout(() => begin(gc), 2000)
       else if (Date.now() - t0 > 25000) begin(gc)
       else setTimeout(waitReady, 100)
     }
@@ -131,7 +194,7 @@ export default function Replay() {
     return () => {
       cancelled = true
     }
-  }, [ready])
+  }, [ready, gen])
 
   const pick = (f: File) =>
     f
@@ -144,24 +207,47 @@ export default function Replay() {
   if (!ready) return <div id="status-message">Loading replay…</div>
   return (
     <>
-      {/* Contain render errors (e.g. clicking game UI that replay mode doesn't support) to a
-          recoverable fallback instead of letting them unmount the whole app. */}
-      <ReplayErrorBoundary>
-        <Game />
-      </ReplayErrorBoundary>
-      {/* Cover the booting scene until playback starts (high z-index so it sits over the sidebar/HUD),
-          so it doesn't look frozen / start mid-round. */}
+      {/* The game is unmounted between boots (showGame=false) so the old Phaser scene is fully torn
+          down before the next one mounts; keyed by `gen` for a clean boundary + fresh GameContainer per
+          boot. ReplayErrorBoundary contains render errors (e.g. clicking unsupported UI) to a
+          recoverable fallback instead of unmounting the whole app. */}
+      {showGame && (
+        <ReplayErrorBoundary key={gen}>
+          <ReplayGameHost />
+        </ReplayErrorBoundary>
+      )}
+      {/* Cover the (re)booting scene until playback starts (high z-index so it sits over the sidebar/HUD),
+          so it doesn't look frozen / start mid-round, and so a seek doesn't flash the half-built scene. */}
       {!playing && (
         <div style={{ ...P.wrap, zIndex: 1500 }}>
           <div style={P.card}>
-            <div style={P.title}>Loading replay…</div>
-            <div style={P.sub}>preparing the match</div>
+            <div style={P.title}>{seeking ? "Seeking…" : "Loading replay…"}</div>
+            <div style={P.sub}>{seeking ? "rebuilding the scene" : "preparing the match"}</div>
           </div>
         </div>
       )}
-      {replayRoom.current && <ReplayControls room={replayRoom.current} />}
+      {replayRoom.current && (
+        <ReplayControls room={replayRoom.current} onSeek={seekTo} onRestart={restart} />
+      )}
     </>
   )
+}
+
+// Wraps the unchanged <Game/> and destroys its Phaser game on unmount. Nothing else does (the game's
+// own teardown only runs on the leave flow), and a seek unmounts this host to start a fresh scene, so
+// the old game must be torn down here or it leaks and its callbacks fire into a dead scene.
+function ReplayGameHost() {
+  useEffect(
+    () => () => {
+      try {
+        getGameContainer()?.game?.destroy(true)
+      } catch {
+        /* already gone */
+      }
+    },
+    []
+  )
+  return <Game />
 }
 
 function FilePicker({ onPick }: { onPick: (f: File) => void }) {

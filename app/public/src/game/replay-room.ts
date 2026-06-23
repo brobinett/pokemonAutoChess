@@ -254,16 +254,10 @@ export class ReplayRoom {
     return this.speed
   }
 
-  /** Seek to a time. Forward seeks fast-apply in-page; backward seeks need a fresh decoder, so the
-   * caller (replay.tsx) reloads with ?startMs= — `seek` returns "reload" to request that. */
-  seek(ms: number): "ok" | "reload" {
-    const target = Math.max(0, Math.min(ms, this.totalMs))
-    if (target < this.currentMs) return "reload"
-    this.fastForwardTo(target)
-    if (this.idx >= this.queue.length) this.finish()
-    else if (!this.paused) this.scheduleNext()
-    return "ok"
-  }
+  // Seeking is handled by replay.tsx rebooting a fresh ReplayRoom at the target time (boot()) — both
+  // directions — so there is no in-place seek here; the decoder is forward-only and rewinding it in
+  // place would desync the bound renderer. `fastForwardTo` (used by startPlayback for startMs) is what
+  // lands a fresh decoder on the target frame.
 
   onEnded(cb: () => void) {
     this.endedHandlers.add(cb)
