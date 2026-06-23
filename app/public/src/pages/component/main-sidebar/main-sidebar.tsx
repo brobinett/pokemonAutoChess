@@ -11,6 +11,7 @@ import {
   useAppDispatch,
   useAppSelector
 } from "../../../hooks"
+import { rooms } from "../../../network"
 import { usePreferences } from "../../../preferences"
 import { setSearchedUser } from "../../../stores/LobbyStore"
 import { toggleFullScreen } from "../../utils/fullscreen"
@@ -131,6 +132,15 @@ export function MainSidebar(props: MainSidebarProps) {
     )
   )
   function onClickLeave() {
+    // A replay is not a live match — there's nothing to surrender. Exit straight to the lobby
+    // instead of running the normal `leave()` (which navigates to /after and fires the room's
+    // onLeave, that the game page turns into a "connection failed" screen). We just stop the
+    // replay's playback timer and go home.
+    if (rooms.game?.roomId === "replay") {
+      ;(rooms.game as unknown as { pause?: () => void }).pause?.()
+      navigate("/lobby")
+      return
+    }
     if (player && player.life > 0 && playersAlive.length > 1) {
       setShowSurrenderConfirm(true)
     } else {

@@ -1,0 +1,27 @@
+/* Read-only treatment for the replay viewer.
+ *
+ * A replay is watched from the recording player's own POV, so the normal own-POV action controls
+ * (lock shop, reroll, buy XP, buy from shop, pick a proposition) are all present and look clickable
+ * — but there is no live server to send to, so clicking them does nothing. That "clickable but
+ * inert" state reads as broken. We don't touch the game components; instead replay.tsx adds the
+ * `replay-mode` class to <body> and blocks the inert clicks (capture phase), and these rules give
+ * the controls a non-interactive appearance.
+ *
+ * The board itself is already read-only in a replay: pokemon sprites are only draggable when
+ * `scene.spectate === false`, and the viewer runs with spectate enabled (see pokemon.ts draggable).
+ *
+ * Shop slots keep their authentic look (dimmed only by the game's own "can't afford" styling) so the
+ * viewer can read what was offered and still hover for details — only their buy-click is blocked. */
+
+body.replay-mode .game-shop-actions .lock-icon,
+body.replay-mode .game-shop-actions .refresh-button,
+body.replay-mode .game-experience .buy-xp-button {
+  opacity: 0.5;
+  filter: grayscale(0.6);
+  cursor: default;
+}
+
+body.replay-mode .game-pokemons-store .game-pokemon-portrait.clickable,
+body.replay-mode .game-choice .clickable {
+  cursor: default;
+}

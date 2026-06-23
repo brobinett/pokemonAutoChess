@@ -9,7 +9,37 @@ import { setPlayer } from "../stores/GameStore"
 import { logIn } from "../stores/NetworkStore"
 import ReplayControls from "./component/replay/replay-controls"
 import ReplayErrorBoundary from "./component/replay/replay-error-boundary"
+import "./component/replay/replay-readonly.css"
 import Game, { getGameContainer } from "./game"
+
+// The own-POV action controls (lock shop, reroll, buy XP, buy from shop, pick a proposition) are
+// rendered by the unchanged game UI and would call into the (no-op) ReplayRoom.send — i.e. they look
+// clickable but do nothing. Rather than edit those game components, we mark <body> read-only and
+// swallow their clicks in the capture phase (before React's handlers run). The board is already
+// read-only because the viewer runs with spectate enabled (pokemon sprites are only draggable when
+// scene.spectate === false). Shop slots keep their hover tooltips — only the buy-click is blocked.
+const READONLY_CONTROLS =
+  ".game-shop-actions .lock-icon," +
+  ".game-shop-actions .refresh-button," +
+  ".game-experience .buy-xp-button," +
+  ".game-pokemons-store .game-pokemon-portrait.clickable," +
+  ".game-choice .clickable"
+
+function installReadonlyGuard(): () => void {
+  document.body.classList.add("replay-mode")
+  const block = (e: Event) => {
+    const target = e.target
+    if (target instanceof Element && target.closest(READONLY_CONTROLS)) {
+      e.stopPropagation()
+      e.preventDefault()
+    }
+  }
+  document.addEventListener("click", block, true)
+  return () => {
+    document.body.classList.remove("replay-mode")
+    document.removeEventListener("click", block, true)
+  }
+}
 
 // Replay viewer: load a recorded `.colreplay` transcript, present it to the existing game page as a
 // ReplayRoom, and render the unchanged <Game/> UI. No server, no re-simulation — the recorded state
@@ -32,6 +62,9 @@ export default function Replay() {
   const params = new URLSearchParams(window.location.search)
   const speed = Number(params.get("speed") ?? "1")
   const startMs = Number(params.get("startMs") ?? "0") // set by a backward scrub (reload-based seek)
+
+  // Make the viewer read-only: dim the inert own-POV action controls and swallow their clicks.
+  useEffect(installReadonlyGuard, [])
 
   const loadManifest = (manifest: ReplayManifest) => {
     const room = new ReplayRoom(manifest, { speed, startMs })

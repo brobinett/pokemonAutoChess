@@ -164,13 +164,19 @@ export class ReplayRoom {
     this.scheduleNext()
   }
 
-  /** Fast-apply frames (no delay) until the game has actually started (stageLevel >= 1), so the
-   * replay opens at the first round instead of the loading screen. Guarded against an unreadable
-   * stageLevel so it can never skip the whole match. */
+  /** Fast-apply frames (no delay) through the pre-game *loading wait* only, stopping the instant the
+   * match actually begins — the opening t0 portal carousel. That carousel is a TOWN-phase minigame at
+   * stageLevel 0 whose avatars/portals populate the moment the server runs startGame(); everything
+   * before it is just the loading screen (players' loadingProgress climbing to 100). We detect "game
+   * started" by the minigame being live (`avatars` present) rather than by stageLevel, because
+   * stageLevel only reaches 1 AFTER the ~23s carousel — gating on it skipped the carousel entirely and
+   * opened the replay on round 1 (round-2 play-test feedback). The stageLevel>=1 fallback guards a
+   * recording that somehow opens past the carousel, so we still never skip the whole match. */
   private skipLoadingPhase() {
     let guard = 0
-    const started = () => (this.state?.stageLevel ?? 1) >= 1
-    while (this.idx < this.queue.length && !started() && guard++ < this.queue.length) {
+    const gameStarted = () =>
+      (this.state?.avatars?.size ?? 0) > 0 || (this.state?.stageLevel ?? 1) >= 1
+    while (this.idx < this.queue.length && !gameStarted() && guard++ < this.queue.length) {
       if (!this.applyNext()) break
     }
   }
