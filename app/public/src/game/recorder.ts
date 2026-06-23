@@ -1,4 +1,5 @@
 import { Room, SchemaSerializer } from "@colyseus/sdk"
+import { rooms } from "../network"
 import type { ReplayManifest } from "./replay-room"
 
 // In-client match recorder. Taps the live client's own inbound Colyseus stream — the exact same seam
@@ -29,13 +30,11 @@ let seq = 0
 let installed = false
 
 // Strong ref to the most recent game room so its captured frames survive after rooms.game is cleared
-// (e.g. on the after-game screen). Updated by the in-game overlay via markGameRoom().
+// (e.g. on the after-game screen for the download). Tracked automatically from the taps below — no
+// visible in-game UI needed.
 let lastGameRoom: Room | null = null
-export function markGameRoom(room: Room | undefined) {
-  if (room) lastGameRoom = room
-}
 export function getActiveGameRoom(): Room | null {
-  return lastGameRoom
+  return rooms.game ?? lastGameRoom
 }
 
 const push = (map: WeakMap<object, CapturedFrame[]>, key: object, frame: CapturedFrame) => {
@@ -81,6 +80,7 @@ export function installRecorder() {
   const R = Room.prototype as unknown as { dispatchMessage: (t: string | number, m: unknown) => unknown }
   const origDispatch = R.dispatchMessage
   R.dispatchMessage = function (this: object, type: string | number, message: unknown) {
+    if (rooms.game) lastGameRoom = rooms.game // retain the game room for the after-game download
     push(msgCaptures, this, { t: Date.now(), seq: seq++, kind: "message", type, payload: serializePayload(message) })
     return origDispatch.call(this, type, message)
   }

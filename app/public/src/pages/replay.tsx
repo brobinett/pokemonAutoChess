@@ -23,6 +23,7 @@ export default function Replay() {
   const dispatch = useAppDispatch()
   const [ready, setReady] = useState(false)
   const [needFile, setNeedFile] = useState(false)
+  const [playing, setPlaying] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const initialized = useRef(false)
   const replayRoom = useRef<ReplayRoom | null>(null)
@@ -60,28 +61,39 @@ export default function Replay() {
       .catch((e) => setError(String(e?.message ?? e)))
   }, [])
 
-  // Once <Game/> is mounted and revealed, wait for the Phaser board to exist, then play the match.
+  // Once <Game/> is mounted and revealed, wait for the Phaser scene to be fully render-ready before
+  // starting the playback clock. Starting earlier (e.g. while the map/assets are still loading) makes
+  // the wall-clock advance with nothing on screen — so when the scene finally draws, it has jumped
+  // ahead. We gate on board + map existing AND the loader idle, and show a loading overlay meanwhile.
   useEffect(() => {
     if (!ready) return
     const room = replayRoom.current
     if (!room) return
     let cancelled = false
     const t0 = Date.now()
-    const waitForBoard = () => {
+    const begin = (gc: ReturnType<typeof getGameContainer>) => {
+      if (cancelled) return
+      // A replay is a spectate session: enabling spectate makes clicking a player's portrait switch
+      // to their board (playerClick only does the local view-switch when scene.spectate is true).
+      if (gc) {
+        gc.spectate = true
+        if (gc.gameScene) gc.gameScene.spectate = true
+      }
+      room.startPlayback()
+      setPlaying(true)
+    }
+    const waitReady = () => {
       if (cancelled) return
       const gc = getGameContainer()
-      const board = gc?.gameScene?.board
-      if (board || Date.now() - t0 > 15000) {
-        // A replay is a spectate session: enabling spectate makes clicking a player's portrait switch
-        // to their board (playerClick only does the local view-switch when scene.spectate is true).
-        if (gc) {
-          gc.spectate = true
-          if (gc.gameScene) gc.gameScene.spectate = true
-        }
-        room.startPlayback()
-      } else setTimeout(waitForBoard, 100)
+      // Wait for the board (i.e. the scene's startGame ran). The loader is never fully idle in a game
+      // scene, so we don't gate on it; instead, once the board exists we give the initial map/assets a
+      // short grace to finish so playback doesn't open on a half-loaded scene. The 25s cap is a last
+      // resort for a very slow boot.
+      if (gc?.gameScene?.board) setTimeout(() => begin(gc), 2000)
+      else if (Date.now() - t0 > 25000) begin(gc)
+      else setTimeout(waitReady, 100)
     }
-    waitForBoard()
+    waitReady()
     return () => {
       cancelled = true
     }
@@ -99,6 +111,15 @@ export default function Replay() {
   return (
     <>
       <Game />
+      {/* Cover the booting scene until playback starts, so it doesn't look frozen / start mid-round. */}
+      {!playing && (
+        <div style={P.wrap}>
+          <div style={P.card}>
+            <div style={P.title}>Loading replay…</div>
+            <div style={P.sub}>preparing the match</div>
+          </div>
+        </div>
+      )}
       {replayRoom.current && <ReplayControls room={replayRoom.current} />}
     </>
   )
