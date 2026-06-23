@@ -1,0 +1,108 @@
+/* PAC-native styling for the replay viewer's own overlays (the playback controls bar and the
+ * after-game download bar). Reuses the game's design tokens (style/colors.css) and shared classes
+ * (.my-container, .bubbly) so these read as part of the game rather than bolted-on panels. */
+
+/* ── Playback controls bar ─────────────────────────────────────────────────────────────────── */
+.replay-controls {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.3em 0.5em;
+  font-size: 14px;
+  user-select: none;
+}
+
+/* grip the bar is dragged by */
+.replay-controls .rc-handle {
+  cursor: move;
+  color: var(--color-fg-secondary);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 0.15em;
+  letter-spacing: -2px;
+}
+
+/* compact the chunky .bubbly buttons down to control-bar size */
+.replay-controls .bubbly {
+  font-size: 100%;
+  padding: 0.1em 0.45em 0.25em;
+  border-radius: 8px;
+  box-shadow:
+    inset -4px -4px 0px 0px var(--color-bg-tertiary),
+    var(--shadow-clickable);
+  min-width: 2.1em;
+}
+.replay-controls .bubbly.rc-play {
+  font-size: 120%;
+}
+
+.replay-controls .rc-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-fg-secondary);
+  min-width: 3em;
+  text-align: center;
+}
+
+.replay-controls .rc-track {
+  position: relative;
+  width: 17vw;
+  min-width: 170px;
+  height: 0.8em;
+  background: var(--color-bg-tertiary);
+  border: var(--border-thin);
+  border-radius: 7px;
+  cursor: pointer;
+  overflow: hidden;
+}
+.replay-controls .rc-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--color-bg-accent);
+}
+
+.replay-controls .rc-speeds {
+  display: flex;
+  gap: 0.25em;
+}
+
+.replay-controls .rc-label {
+  letter-spacing: 1px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-fg-secondary);
+  min-width: 5.2em;
+  text-align: right;
+}
+.replay-controls .rc-label.ended {
+  color: var(--color-fg-gold);
+}
+
+/* ── After-game download bar (/after) ──────────────────────────────────────────────────────── */
+.recorder-endgame {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 0.75em;
+  padding: 0.4em 0.8em;
+  font-size: 14px;
+}
+.recorder-endgame .re-label {
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--color-fg-primary);
+}
+.recorder-endgame .re-meta {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-fg-secondary);
+}
+.recorder-endgame .re-hint {
+  font-size: 11px;
+  color: var(--color-fg-secondary);
+  opacity: 0.8;
+}
