@@ -12,6 +12,7 @@ import Game from "./pages/game"
 import { Gameboy } from "./pages/gameboy"
 import Lobby from "./pages/lobby"
 import Preparation from "./pages/preparation"
+import RecorderEndGame from "./pages/component/replay/recorder-endgame"
 import RecorderOverlay from "./pages/component/replay/recorder-overlay"
 import Replay from "./pages/replay"
 import { SpriteDebug } from "./pages/sprite-viewer"
@@ -58,7 +59,15 @@ i18n.on("initialized", () => {
                 }
               />
               <Route path="/replay" element={<Replay />} />
-              <Route path="/after" element={<AfterGame />} />
+              <Route
+                path="/after"
+                element={
+                  <>
+                    <AfterGame />
+                    <RecorderEndGame />
+                  </>
+                }
+              />
               <Route path="/bot-builder" element={<BotBuilder />} />
               <Route path="/bot-admin" element={<BotManagerPanel />} />
               <Route path="/sprite-viewer" element={<SpriteDebug />} />

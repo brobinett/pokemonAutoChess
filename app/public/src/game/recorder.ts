@@ -28,6 +28,16 @@ const msgCaptures = new WeakMap<object, CapturedFrame[]>() // room instance -> m
 let seq = 0
 let installed = false
 
+// Strong ref to the most recent game room so its captured frames survive after rooms.game is cleared
+// (e.g. on the after-game screen). Updated by the in-game overlay via markGameRoom().
+let lastGameRoom: Room | null = null
+export function markGameRoom(room: Room | undefined) {
+  if (room) lastGameRoom = room
+}
+export function getActiveGameRoom(): Room | null {
+  return lastGameRoom
+}
+
 const push = (map: WeakMap<object, CapturedFrame[]>, key: object, frame: CapturedFrame) => {
   let arr = map.get(key)
   if (!arr) map.set(key, (arr = []))
@@ -76,15 +86,18 @@ export function installRecorder() {
   }
 }
 
-/** Captured frame count + span for the given room (for the recording indicator). */
+/** Captured frame count + span for the given room (for the recording indicator). O(1): frames are
+ * pushed in receive order, so first/last elements bound the span — avoids spreading thousands of
+ * frames on every poll (which caused GC jank during long games). */
 export function getCaptureInfo(room: Room | undefined): { frames: number; ms: number } {
   if (!room) return { frames: 0, ms: 0 }
   const s = stateCaptures.get((room as unknown as { serializer: object }).serializer) ?? []
   const m = msgCaptures.get(room) ?? []
-  const all = [...s, ...m]
-  if (all.length === 0) return { frames: 0, ms: 0 }
-  const ts = all.map((f) => f.t)
-  return { frames: all.length, ms: Math.max(...ts) - Math.min(...ts) }
+  const frames = s.length + m.length
+  if (frames === 0) return { frames: 0, ms: 0 }
+  const firstT = Math.min(s.length ? s[0].t : Infinity, m.length ? m[0].t : Infinity)
+  const lastT = Math.max(s.length ? s[s.length - 1].t : -Infinity, m.length ? m[m.length - 1].t : -Infinity)
+  return { frames, ms: lastT - firstT }
 }
 
 /** Assemble a .colreplay manifest from what this client received for `room`. */

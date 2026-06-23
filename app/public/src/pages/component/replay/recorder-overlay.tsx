@@ -1,5 +1,5 @@
 import { type CSSProperties, useEffect, useState } from "react"
-import { downloadReplay, getCaptureInfo } from "../../../game/recorder"
+import { downloadReplay, getCaptureInfo, markGameRoom } from "../../../game/recorder"
 import { useAppSelector } from "../../../hooks"
 import { rooms } from "../../../network"
 
@@ -10,10 +10,12 @@ export default function RecorderOverlay() {
   const uid = useAppSelector((s) => s.network.uid)
   const [, force] = useState(0)
   useEffect(() => {
-    const id = setInterval(() => force((n) => (n + 1) % 1e6), 500)
+    const id = setInterval(() => force((n) => (n + 1) % 1e6), 1000)
     return () => clearInterval(id)
   }, [])
 
+  // Remember this game room so the after-game screen can still download once rooms.game is cleared.
+  markGameRoom(rooms.game)
   const room = rooms.game
   const info = getCaptureInfo(room)
   const ready = !!room && info.frames > 0
