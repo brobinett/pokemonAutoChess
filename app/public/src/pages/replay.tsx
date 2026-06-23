@@ -69,9 +69,17 @@ export default function Replay() {
     const t0 = Date.now()
     const waitForBoard = () => {
       if (cancelled) return
-      const board = getGameContainer()?.gameScene?.board
-      if (board || Date.now() - t0 > 15000) room.startPlayback()
-      else setTimeout(waitForBoard, 100)
+      const gc = getGameContainer()
+      const board = gc?.gameScene?.board
+      if (board || Date.now() - t0 > 15000) {
+        // A replay is a spectate session: enabling spectate makes clicking a player's portrait switch
+        // to their board (playerClick only does the local view-switch when scene.spectate is true).
+        if (gc) {
+          gc.spectate = true
+          if (gc.gameScene) gc.gameScene.spectate = true
+        }
+        room.startPlayback()
+      } else setTimeout(waitForBoard, 100)
     }
     waitForBoard()
     return () => {

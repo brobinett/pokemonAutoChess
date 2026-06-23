@@ -160,7 +160,19 @@ export class ReplayRoom {
     this.started = true
     this.reveal()
     if (this.startMs > 0) this.fastForwardTo(this.startMs) // renderer is attached → sprites stay correct
+    else this.skipLoadingPhase() // don't replay the pre-game loading wait; start at game start
     this.scheduleNext()
+  }
+
+  /** Fast-apply frames (no delay) until the game has actually started (stageLevel >= 1), so the
+   * replay opens at the first round instead of the loading screen. Guarded against an unreadable
+   * stageLevel so it can never skip the whole match. */
+  private skipLoadingPhase() {
+    let guard = 0
+    const started = () => (this.state?.stageLevel ?? 1) >= 1
+    while (this.idx < this.queue.length && !started() && guard++ < this.queue.length) {
+      if (!this.applyNext()) break
+    }
   }
 
   /** Apply the next queued frame, advance currentMs, notify state listeners. Returns false at end. */

@@ -237,6 +237,12 @@ export function MainSidebar(props: MainSidebarProps) {
           </NavLink>
         )}
 
+        {page !== "game" && (
+          <NavLink svg="compact-disc" onClick={() => navigate("/replay")}>
+            Replay viewer
+          </NavLink>
+        )}
+
         {page !== "game" &&
           ((!GADGETS.pokeguesser.disabled &&
             profileLevel >= GADGETS.pokeguesser.levelRequired) ||
