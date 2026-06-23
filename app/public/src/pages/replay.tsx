@@ -2,6 +2,7 @@ import type { Room } from "@colyseus/sdk"
 import type { User } from "@firebase/auth-types"
 import { type CSSProperties, useEffect, useRef, useState } from "react"
 import type GameState from "../../../rooms/states/game-state"
+import { GamePhaseState } from "../../../types/enum/Game"
 import { ReplayRoom, type ReplayManifest } from "../game/replay-room"
 import { useAppDispatch } from "../hooks"
 import { rooms } from "../network"
@@ -177,6 +178,14 @@ export default function Replay() {
       }
       room.startPlayback()
       if (bootPausedRef.current) room.pause() // keep a paused scrub paused at the new time
+      // A mid-fight seek boots with the battle simulation already populated, so the one-shot combat
+      // onAdd callbacks never fired and no unit sprites exist. Build them from the current simulation
+      // (idempotent — addPokemonEntitySprite skips ids it already has) and make them visible. Prep-phase
+      // board units are rebuilt by the BoardManager at startGame, so only FIGHT needs this.
+      if (gc?.gameScene?.battle && room.state?.phase === GamePhaseState.FIGHT) {
+        gc.gameScene.battle.buildPokemons()
+        gc.gameScene.battle.onSimulationStart()
+      }
       setPlaying(true)
     }
     const waitReady = () => {

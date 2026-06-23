@@ -60,6 +60,7 @@ export class ReplayRoom {
   private started = false
   private revealed = false
   private revealScheduled = false
+  private preloadMapsPayload: unknown = null // PRELOAD_MAPS captured during a seek fast-forward (see above)
   // exposed for the replay-controls UI (polled):
   currentMs = 0
   paused = false
@@ -94,6 +95,29 @@ export class ReplayRoom {
       } else {
         this.queue.push(f)
       }
+    }
+
+    // For a seek (startMs > 0) advance the STATE to the target HERE, before the scene boots, so the
+    // scene boots already at the target: startGame() then builds the board/battle managers and reads the
+    // map from the state at T (like a fresh game / the carousel start). Fast-forwarding AFTER the scene
+    // attached instead leaves a stale map + sprites.
+    if (this.startMs > 0) this.fastForwardStateTo(this.startMs)
+  }
+
+  /** Constructor-time fast-forward for a seek: advance the decoder STATE to `ms` with no renderer
+   * attached. Pre-T ROOM_DATA messages are transient (damage popups, income) EXCEPT PRELOAD_MAPS, the
+   * one-time setup that loads the region tilemaps — we stash its payload to re-emit once the scene is up
+   * (startPlayback), so setMap() at the target has a loaded tilemap (else the region map renders black). */
+  private fastForwardStateTo(ms: number) {
+    while (this.idx < this.queue.length && this.queue[this.idx].t <= ms) {
+      const f = this.queue[this.idx]
+      if (f.kind === "message") {
+        if (f.type === "PRELOAD_MAPS") this.preloadMapsPayload = this.decodePayload(f.payload)
+      } else {
+        this.applyFrame(f)
+      }
+      this.currentMs = f.t
+      this.idx++
     }
   }
 
@@ -159,8 +183,15 @@ export class ReplayRoom {
     if (this.started) return
     this.started = true
     this.reveal()
-    if (this.startMs > 0) this.fastForwardTo(this.startMs) // renderer is attached → sprites stay correct
-    else this.skipLoadingPhase() // don't replay the pre-game loading wait; start at game start
+    // startMs (a seek target) was already fast-forwarded in the constructor, so the scene booted at the
+    // target. For a fresh load (startMs === 0) trim the pre-game loading wait so we open on the carousel.
+    if (this.startMs === 0) {
+      this.skipLoadingPhase()
+    } else if (this.preloadMapsPayload != null) {
+      // Scene is up now (startPlayback runs after the board exists). Replaying the captured PRELOAD_MAPS
+      // preloads the region tilemaps; its load-complete handler then swaps to the target's map.
+      this.emitMessage("PRELOAD_MAPS", this.preloadMapsPayload)
+    }
     this.scheduleNext()
   }
 
@@ -218,13 +249,6 @@ export class ReplayRoom {
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
     this.endedHandlers.forEach((h) => h())
-  }
-
-  /** Apply frames with no delay up to (and including) the given time. Renderer must be attached. */
-  private fastForwardTo(ms: number) {
-    while (this.idx < this.queue.length && this.queue[this.idx].t <= ms) {
-      if (!this.applyNext()) break
-    }
   }
 
   // --- replay controls (driven by ReplayControls) ---------------------------------------------
@@ -306,8 +330,15 @@ export class ReplayRoom {
     return () => this.reconnectHandlers.delete(cb)
   }
 
-  /** Inbound player commands are meaningless in a replay — swallow them. */
-  send(_type: string | number, _message?: unknown) {}
+  /** Inbound player commands are meaningless in a replay — swallow them, EXCEPT LOADING_COMPLETE. The
+   * GameScene sends LOADING_COMPLETE once its OWN assets finish loading (preload's load.once("complete"))
+   * and runs startGame() only when that message comes back — the real server broadcasts it to the sender.
+   * We mirror that broadcast so startGame() (which builds board/battle/minigame + sets the map) runs
+   * reliably AFTER assets load on every (re)mount. Without it a seek-remount can miss our one-shot
+   * reveal() emit and never start the game (no board/battle → mid-game seeks render nothing). */
+  send(type: string | number, _message?: unknown) {
+    if (type === "LOADING_COMPLETE") this.emitMessage("LOADING_COMPLETE")
+  }
   sendBytes(_type: string | number, _bytes?: unknown) {}
 
   removeAllListeners() {
