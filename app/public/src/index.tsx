@@ -12,12 +12,17 @@ import Game from "./pages/game"
 import { Gameboy } from "./pages/gameboy"
 import Lobby from "./pages/lobby"
 import Preparation from "./pages/preparation"
+import RecorderOverlay from "./pages/component/replay/recorder-overlay"
 import Replay from "./pages/replay"
 import { SpriteDebug } from "./pages/sprite-viewer"
 import TranslationsPage from "./pages/translations"
+import { installRecorder } from "./game/recorder"
 import store from "./stores/index"
 import "./style/index.css"
 import "./theme"
+
+// Tap the inbound Colyseus stream before any game room joins, so a match can be recorded + downloaded.
+installRecorder()
 
 // Redirect top window if running in an iframe
 if (window.top && window !== window.top) {
@@ -43,7 +48,15 @@ i18n.on("initialized", () => {
               <Route path="/auth" element={<Auth />} />
               <Route path="/lobby" element={<Lobby />} />
               <Route path="/preparation" element={<Preparation />} />
-              <Route path="/game" element={<Game />} />
+              <Route
+                path="/game"
+                element={
+                  <>
+                    <Game />
+                    <RecorderOverlay />
+                  </>
+                }
+              />
               <Route path="/replay" element={<Replay />} />
               <Route path="/after" element={<AfterGame />} />
               <Route path="/bot-builder" element={<BotBuilder />} />
