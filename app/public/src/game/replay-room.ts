@@ -52,6 +52,9 @@ export class ReplayRoom {
   // --- playback state ---
   readonly manifest: ReplayManifest
   readonly totalMs: number
+  // Game start ≈ the first LOADING_COMPLETE broadcast (server ran startGame → the carousel begins).
+  // Used to re-base the scrubber so 0:00 = game start, not recording start (which is mid-loading-wait).
+  readonly gameStartMs: number
   private queue: ReplayFrame[] = []
   private idx = 0
   private timer: ReturnType<typeof setTimeout> | null = null
@@ -80,6 +83,8 @@ export class ReplayRoom {
     this.speed = opts.speed && opts.speed > 0 ? opts.speed : 1
     this.startMs = opts.startMs && opts.startMs > 0 ? opts.startMs : 0
     this.totalMs = manifest.frames.length ? manifest.frames[manifest.frames.length - 1].t : 0
+    this.gameStartMs =
+      manifest.frames.find((f) => f.kind === "message" && f.type === "LOADING_COMPLETE")?.t ?? 0
 
     // Apply the handshake + the initial full-state snapshot synchronously, so `room.state` is fully
     // populated by the time the game page mounts. When the renderer later attaches its callbacks,

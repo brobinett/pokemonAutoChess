@@ -73,7 +73,15 @@ export default function ReplayControls({
 
   // Both directions reboot the scene at the target time (replay.tsx boot()), so seeking is in-page and
   // never breaks sprites; the controls just report where to jump.
-  const pct = room.totalMs ? Math.min(100, (room.currentMs / room.totalMs) * 100) : 0
+  //
+  // Re-base the timeline so 0:00 = game start (the carousel), not recording start (mid-loading-wait):
+  // the recorder starts capturing while players are still loading, so raw frame times include that wait.
+  // Displayed times subtract the offset and the scrubber spans [gameStart, end]; seek targets stay
+  // absolute (what boot() wants).
+  const base = room.gameStartMs
+  const span = Math.max(1, room.totalMs - base)
+  const elapsed = Math.max(0, room.currentMs - base)
+  const pct = Math.min(100, Math.max(0, (elapsed / span) * 100))
   const posStyle = pos
     ? { left: pos.x, top: pos.y }
     : { left: "50%", top: 58, transform: "translateX(-50%)" }
@@ -92,19 +100,19 @@ export default function ReplayControls({
         {room.ended ? "↻" : room.paused ? "▶" : "⏸"}
       </button>
 
-      <span className="rc-time">{fmt(room.currentMs)}</span>
+      <span className="rc-time">{fmt(elapsed)}</span>
 
       <div
         className="rc-track"
         onClick={(e) => {
           const r = e.currentTarget.getBoundingClientRect()
-          onSeek(((e.clientX - r.left) / r.width) * room.totalMs)
+          onSeek(base + ((e.clientX - r.left) / r.width) * span)
         }}
       >
         <div className="rc-fill" style={{ width: `${pct}%` }} />
       </div>
 
-      <span className="rc-time">{fmt(room.totalMs)}</span>
+      <span className="rc-time">{fmt(span)}</span>
 
       <div className="rc-speeds">
         {SPEEDS.map((s) => (
