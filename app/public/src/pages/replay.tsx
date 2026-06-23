@@ -8,6 +8,7 @@ import { rooms } from "../network"
 import { setPlayer } from "../stores/GameStore"
 import { logIn } from "../stores/NetworkStore"
 import ReplayControls from "./component/replay/replay-controls"
+import ReplayErrorBoundary from "./component/replay/replay-error-boundary"
 import Game, { getGameContainer } from "./game"
 
 // Replay viewer: load a recorded `.colreplay` transcript, present it to the existing game page as a
@@ -110,10 +111,15 @@ export default function Replay() {
   if (!ready) return <div id="status-message">Loading replay…</div>
   return (
     <>
-      <Game />
-      {/* Cover the booting scene until playback starts, so it doesn't look frozen / start mid-round. */}
+      {/* Contain render errors (e.g. clicking game UI that replay mode doesn't support) to a
+          recoverable fallback instead of letting them unmount the whole app. */}
+      <ReplayErrorBoundary>
+        <Game />
+      </ReplayErrorBoundary>
+      {/* Cover the booting scene until playback starts (high z-index so it sits over the sidebar/HUD),
+          so it doesn't look frozen / start mid-round. */}
       {!playing && (
-        <div style={P.wrap}>
+        <div style={{ ...P.wrap, zIndex: 1500 }}>
           <div style={P.card}>
             <div style={P.title}>Loading replay…</div>
             <div style={P.sub}>preparing the match</div>
