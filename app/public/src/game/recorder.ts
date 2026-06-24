@@ -4,7 +4,7 @@ import store from "../stores"
 import {
   appendFrames,
   loadFrames,
-  pruneOld,
+  pruneToRecent,
   storedInfo,
   type StoredFrame
 } from "./recorder-store"
@@ -57,7 +57,11 @@ const GAME_BUILD = {
 // reconnect used to lose everything before the crash. We flush to IndexedDB ~1s at a time, keyed by
 // roomId — reconnect rejoins the same roomId, so the recording survives a crash. See recorder-store.ts.
 const FLUSH_MS = 1000
-const RETAIN_MS = 2 * 24 * 60 * 60 * 1000 // prune recordings whose last activity is older than 2 days
+// Keep only the current + previous recording. A past game isn't downloadable from the UI (only the
+// just-finished game's after-screen offers a download), so retaining more just wastes storage. At
+// ~2 KB/s a 35-min game is ~4-8 MB, so this bounds IndexedDB to ~tens of MB regardless of play volume.
+const KEEP_RECENT = 2
+let lastPrunedForRoom: string | null = null // re-prune when a NEW game starts (drops un-downloaded ones)
 
 const toStored =
   (room: string) =>
@@ -108,6 +112,12 @@ async function flushRoomImpl(room: Room | null): Promise<void> {
   })
   sAll?.splice(0, sLen) // frames captured during the async append remain for the next flush
   mAll?.splice(0, mLen)
+  // When a NEW game starts (roomId changed since the last flush), drop all but the recent recordings so
+  // un-downloaded past games don't pile up; protect the active room so it's never pruned mid-record.
+  if (room.roomId !== lastPrunedForRoom) {
+    lastPrunedForRoom = room.roomId
+    void pruneToRecent(KEEP_RECENT, room.roomId).catch(() => {})
+  }
 }
 
 const push = (
@@ -195,7 +205,7 @@ export function installRecorder() {
   // Periodically flush the active game's frames to durable storage so a crash can't lose them, and drop
   // stale recordings on startup so IndexedDB doesn't grow without bound.
   setInterval(() => void flushRoom(getActiveGameRoom()), FLUSH_MS)
-  void pruneOld(RETAIN_MS, Date.now()).catch(() => {})
+  void pruneToRecent(KEEP_RECENT).catch(() => {})
 }
 
 /** Durable recording summary (frame count + span) for the after-game indicator. Reads the persisted

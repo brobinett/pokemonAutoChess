@@ -6,7 +6,8 @@
 // effort: a hard crash loses at most the last unflushed second.
 //
 // One DB "pac-replay" with two stores: `frames` (autoIncrement key = arrival order, indexed by room) and
-// `meta` (one row per room: firstT/lastT/count for a cheap indicator + age-based pruning).
+// `meta` (one row per room: firstT/lastT/count for a cheap indicator + keep-recent pruning). Storage is
+// bounded to the most-recent recordings (pruneToRecent) since a past game isn't downloadable from the UI.
 
 const DB_NAME = "pac-replay"
 const DB_VERSION = 1
@@ -41,7 +42,10 @@ function openDb(): Promise<IDBDatabase> {
     req.onupgradeneeded = () => {
       const db = req.result
       if (!db.objectStoreNames.contains(FRAMES)) {
-        db.createObjectStore(FRAMES, { autoIncrement: true }).createIndex("room", "room")
+        db.createObjectStore(FRAMES, { autoIncrement: true }).createIndex(
+          "room",
+          "room"
+        )
       }
       if (!db.objectStoreNames.contains(META)) {
         db.createObjectStore(META, { keyPath: "room" })
@@ -103,23 +107,41 @@ export async function loadFrames(room: string): Promise<StoredFrame[]> {
 }
 
 /** Cheap recording summary from the meta row (frame count + span ms), for the download indicator. */
-export async function storedInfo(room: string): Promise<{ frames: number; ms: number; viewerUid?: string }> {
+export async function storedInfo(
+  room: string
+): Promise<{ frames: number; ms: number; viewerUid?: string }> {
   const db = await openDb()
   const tx = db.transaction(META, "readonly")
   const m = (await reqP(tx.objectStore(META).get(room))) as MetaRow | undefined
-  return m ? { frames: m.count, ms: m.lastT - m.firstT, viewerUid: m.viewerUid } : { frames: 0, ms: 0 }
+  return m
+    ? { frames: m.count, ms: m.lastT - m.firstT, viewerUid: m.viewerUid }
+    : { frames: 0, ms: 0 }
 }
 
-/** Drop recordings whose last activity is older than `maxAgeMs` (keeps IndexedDB from growing without
- * bound across many games). Safe: only old, finished recordings are removed. */
-export async function pruneOld(maxAgeMs: number, now: number): Promise<void> {
+/** Keep only the `keep` most-recently-active recordings (plus `protect`, the in-progress game so it's
+ * never dropped mid-record), deleting the rest. Bounds IndexedDB to a couple of games regardless of how
+ * many are played without downloading — a past game isn't reachable from the UI anyway (only the
+ * just-finished game's after-screen offers a download), so there's no reason to retain it. */
+export async function pruneToRecent(
+  keep: number,
+  protect?: string
+): Promise<void> {
   const db = await openDb()
-  const metas = (await reqP(db.transaction(META, "readonly").objectStore(META).getAll())) as MetaRow[]
-  const stale = metas.filter((m) => now - m.lastT > maxAgeMs).map((m) => m.room)
-  if (!stale.length) return
+  const metas = (await reqP(
+    db.transaction(META, "readonly").objectStore(META).getAll()
+  )) as MetaRow[]
+  const keepSet = new Set(
+    metas
+      .sort((a, b) => b.lastT - a.lastT)
+      .slice(0, keep)
+      .map((m) => m.room)
+  )
+  if (protect) keepSet.add(protect)
+  const drop = metas.map((m) => m.room).filter((r) => !keepSet.has(r))
+  if (!drop.length) return
   const tx = db.transaction([FRAMES, META], "readwrite")
   const idx = tx.objectStore(FRAMES).index("room")
-  for (const room of stale) {
+  for (const room of drop) {
     const cur = idx.openCursor(IDBKeyRange.only(room))
     cur.onsuccess = () => {
       const c = cur.result
