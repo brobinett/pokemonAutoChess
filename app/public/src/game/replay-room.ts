@@ -3,11 +3,13 @@ import type { Iterator } from "@colyseus/schema"
 import type GameState from "../../../rooms/states/game-state"
 import { GamePhaseState } from "../../../types/enum/Game"
 
-// "Focus" auto-speed: watch one part of the match at the chosen speed and fast-forward the rest, by
-// flexing the playback cadence per phase (no reboot/seek — it just changes the frame interval).
-//   "off"    — the chosen speed everywhere
-//   "prep"   — fast-forward PICK/TOWN, watch FIGHTs at the chosen speed (the action)
-//   "fights" — fast-forward FIGHTs, watch PICK/TOWN at the chosen speed (where the player actually decides)
+// "Focus" auto-speed: watch one part of the match and fast-forward the rest, by flexing the playback
+// cadence per phase (no reboot/seek — it just changes the frame interval). A focus mode *takes over*
+// speed: the watched part plays at 1× and the rest flies by at FAST_SPEED, so it's one self-contained
+// regime — the manual 1/2/4× buttons are disabled in the UI while a focus mode is active.
+//   "off"    — the manual 1/2/4× speed everywhere
+//   "prep"   — fast-forward PICK/TOWN, watch FIGHTs at 1× (the action)
+//   "fights" — fast-forward FIGHTs, watch PICK/TOWN at 1× (where the player actually decides)
 export type FocusMode = "off" | "prep" | "fights"
 const FAST_SPEED = 8 // multiplier used for the fast-forwarded phase
 
@@ -301,10 +303,11 @@ export class ReplayRoom {
    * current focus mode fast-forwards (read off the live state.phase). */
   private effectiveSpeed(): number {
     if (this.focusMode === "off") return this.baseSpeed
+    // Focus mode takes over: watch one phase at 1×, fast-forward the rest at FAST_SPEED — fixed, so it
+    // never compounds with the manual 1/2/4× (which is why the UI disables those buttons while it's on).
     const isFight = this.state?.phase === GamePhaseState.FIGHT
-    const fast = Math.max(FAST_SPEED, this.baseSpeed * 2)
-    if (this.focusMode === "prep") return isFight ? this.baseSpeed : fast
-    return isFight ? fast : this.baseSpeed // "fights": fast-forward the fights
+    const watchingNow = this.focusMode === "prep" ? isFight : !isFight
+    return watchingNow ? 1 : FAST_SPEED
   }
 
   /** Set the focus auto-speed mode; selecting the active one again turns it off. Reschedules so the

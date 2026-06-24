@@ -293,9 +293,17 @@ export default function ReplayControls({
 
       <span className="rc-time">{fmt(span)}</span>
 
-      <div className="rc-speeds">
+      <div
+        className="rc-speeds"
+        title={focus !== "off" ? "Speed is set by fast-forward — turn FF off to choose it manually" : undefined}
+      >
         {SPEEDS.map((s) => (
-          <button key={s} className={`bubbly${room.getSpeed() === s ? " blue" : ""}`} onClick={() => room.setSpeed(s)}>
+          <button
+            key={s}
+            className={`bubbly${focus === "off" && room.getSpeed() === s ? " blue" : ""}`}
+            disabled={focus !== "off"}
+            onClick={() => room.setSpeed(s)}
+          >
             {s}×
           </button>
         ))}

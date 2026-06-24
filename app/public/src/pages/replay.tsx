@@ -1,6 +1,7 @@
 import type { Room } from "@colyseus/sdk"
 import type { User } from "@firebase/auth-types"
-import { type CSSProperties, useEffect, useRef, useState } from "react"
+import firebase from "firebase/compat/app"
+import { useEffect, useRef, useState } from "react"
 import type GameState from "../../../rooms/states/game-state"
 import { GamePhaseState } from "../../../types/enum/Game"
 import {
@@ -12,14 +13,15 @@ import {
   type ReplayIndex
 } from "../game/replay-index"
 import { ReplayRoom, type ReplayManifest } from "../game/replay-room"
-import { useAppDispatch } from "../hooks"
+import { useAppDispatch, useAppSelector } from "../hooks"
 import { rooms } from "../network"
-import { setPlayer } from "../stores/GameStore"
+import { leaveGame, setPlayer } from "../stores/GameStore"
 import { logIn } from "../stores/NetworkStore"
 import ReplayControls from "./component/replay/replay-controls"
 import ReplayErrorBoundary from "./component/replay/replay-error-boundary"
 import "./component/replay/replay-readonly.css"
-import Game, { getGameContainer } from "./game"
+import "./component/replay/replay-ui.css" // overlay/file-picker styles (needed before ReplayControls mounts)
+import Game, { getGameContainer, reattachReplayRoom } from "./game"
 
 // The own-POV action controls (lock shop, reroll, buy XP, buy from shop, pick a proposition) are
 // rendered by the unchanged game UI and would call into the (no-op) ReplayRoom.send — i.e. they look
@@ -66,97 +68,126 @@ export default function Replay() {
   const [playing, setPlaying] = useState(false)
   const [seeking, setSeeking] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [gen, setGen] = useState(0) // identifies the current boot → keys the mounted <Game/>
-  const [showGame, setShowGame] = useState(false) // unmounted between boots so the old scene is gone first
-  const [bootNonce, setBootNonce] = useState(0) // drives the step-2 (rebuild) effect, one per boot
+  const [gen, setGen] = useState(0) // keys the mounted <Game/>; bumps only on the initial mount (seeks re-attach in place)
+  const [showGame, setShowGame] = useState(false) // <Game/> mounts once and stays mounted; seeks re-attach the scene
+  const [seekEpoch, setSeekEpoch] = useState(0) // bumps per (re)boot to (re)run the wait-for-scene → startPlayback effect
   const initialized = useRef(false)
   const replayRoom = useRef<ReplayRoom | null>(null)
   const manifestRef = useRef<ReplayManifest | null>(null)
   const indexRef = useRef<ReplayIndex | null>(null) // phase/stage/event index — built once per manifest
   const bootPausedRef = useRef(false)
-  const pendingBoot = useRef<{
-    atMs: number
-    paused: boolean
-    speed: number
-    focusMode: ReturnType<ReplayRoom["getFocusMode"]>
-  } | null>(null)
+  // The spectated board at the moment a seek begins. A re-attach restarts the scene, which builds a
+  // brand-new BoardManager; we wait for `board !== prevBoard` so we don't latch onto the outgoing scene.
+  const prevBoardRef = useRef<unknown>(null)
   // While a seek is rebuilding the scene, room.currentMs is stale (the new room/scene isn't ready yet),
   // so phase/stage skips would all recompute the same jump from the frozen position — rapid clicks or a
   // held arrow key wouldn't accumulate. Track the in-flight seek target and navigate relative to it
   // until the seek settles; then fall back to the live position. Cleared in begin() when the scene is up.
   const seekTargetRef = useRef<number | null>(null)
-  const navMs = () => seekTargetRef.current ?? replayRoom.current?.currentMs ?? 0
+  const navMs = () =>
+    seekTargetRef.current ?? replayRoom.current?.currentMs ?? 0
 
   const params = new URLSearchParams(window.location.search)
   const speed = Number(params.get("speed") ?? "1")
   const startMs = Number(params.get("startMs") ?? "0") // optional deep-link start offset
 
+  // The real signed-in identity, captured on first render BEFORE the first boot overwrites Redux's
+  // network.uid with the recording's POV uid (so the renderer treats the recorded player as "self").
+  // We must restore it when the viewer unmounts: starting a live game does NOT re-dispatch logIn
+  // (only auth-state changes do), so a leftover replay uid makes the next game fail to resolve "self"
+  // — its shop never refreshes off the replay's (the phantom Herdier slot) and self/board/combat
+  // rendering breaks (blank-screen crash at the first PvP). Captured once via the ref guard.
+  const realUid = useAppSelector((s) => s.network.uid)
+  const realDisplayName = useAppSelector((s) => s.network.displayName)
+  const realIdentity = useRef<{ uid: string; displayName: string } | null>(null)
+  if (realIdentity.current === null && realUid) {
+    realIdentity.current = { uid: realUid, displayName: realDisplayName }
+  }
+
   // Make the viewer read-only: dim the inert own-POV action controls and swallow their clicks.
   useEffect(installReadonlyGuard, [])
 
-  // Boot (or, on a seek, reboot) the viewer at time `atMs`. We ALWAYS start from a fresh ReplayRoom +
-  // scene fast-forwarded to the target — the one render path known to be correct (it's how the carousel
-  // start works), so seeking never breaks board/combat sprites, and it's in-page (no reload), so a
-  // dropped-file replay survives a backward seek.
-  //
-  // Two steps, to avoid a Phaser lifecycle race (a new game booting while the old one's deferred
-  // destroy() is still in flight throws on the torn-down scene): step 1 here just stops the old room and
-  // unmounts <Game/> (its host cleanup destroys the old Phaser game); step 2 (the effect below) waits a
-  // beat for that teardown, then builds the fresh room and remounts. `isSeek` preserves play/pause+speed.
+  // Full teardown on leaving the /replay route (any exit path — leave button, sidebar nav, back
+  // button): restore the real session so the next live game is clean. Restores the real uid, resets
+  // the GameStore (clears the spectated player's stale shop/board/players), and drops the dead
+  // ReplayRoom from rooms.game. Without this, replay state leaks into the next real match.
+  useEffect(
+    () => () => {
+      // Restore the real uid. Prefer the captured Redux identity (keeps the real displayName); fall back
+      // to firebase.auth().currentUser — the replay only ever overwrites the Redux uid, never firebase —
+      // so the restore can't be defeated even if the early capture missed a not-yet-resolved auth.
+      const captured = realIdentity.current
+      const fbUser = firebase.auth().currentUser
+      const real = captured?.uid
+        ? captured
+        : fbUser
+          ? { uid: fbUser.uid, displayName: fbUser.displayName ?? "" }
+          : null
+      if (real?.uid)
+        dispatch(
+          logIn({ uid: real.uid, displayName: real.displayName } as User)
+        )
+      dispatch(leaveGame(undefined)) // arity-0 reducer; RTK types it as needing an (ignored) payload
+      rooms.game = undefined
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  )
+
+  // Boot the viewer at time `atMs`. A fresh ReplayRoom is built with its decoder fast-forwarded to the
+  // target (cheap — pure decode), then:
+  //  - INITIAL load: mount <Game/> once, which creates the Phaser game (assets load) and binds it.
+  //  - SEEK (game already mounted): RE-ATTACH — swap the live GameContainer/scene onto the fresh room
+  //    without tearing down Phaser, so the loaded assets are reused and the seek is near-instant. The
+  //    decoder is forward-only, so a backward seek is just a fresh decoder fast-forwarded to the target;
+  //    re-attach makes that as cheap as a forward one. `isSeek` preserves play/pause + speed + focus.
   const boot = (atMs: number, isSeek: boolean) => {
-    if (!manifestRef.current) return
+    const manifest = manifestRef.current
+    if (!manifest) return
     const prev = replayRoom.current
-    pendingBoot.current = {
-      atMs: Math.max(0, atMs),
-      paused: isSeek ? !!prev?.paused : false,
+    const target = Math.max(0, atMs)
+    bootPausedRef.current = isSeek ? !!prev?.paused : false
+    seekTargetRef.current = target // navigate relative to this until the seek settles (begin() clears it)
+    prev?.pause() // stop the outgoing timer so it can't apply frames into the scene being re-attached
+
+    const room = new ReplayRoom(manifest, {
       speed: prev?.getSpeed() ?? speed,
-      focusMode: prev?.getFocusMode() ?? "off" // keep the focus auto-speed across a seek
-    }
-    seekTargetRef.current = Math.max(0, atMs) // navigate relative to this until the seek settles
-    prev?.pause() // stop the outgoing timer so it can't apply frames into the scene being torn down
+      startMs: target,
+      focusMode: prev?.getFocusMode() ?? "off"
+    })
+    replayRoom.current = room
+    // Dev/test hook: lets the headless verify harness read playback state (currentMs, focus, paused) at
+    // ms precision, below the controls' mm:ss display. Harmless; remove before the upstream PR.
+    ;(window as unknown as { __replayRoom?: ReplayRoom }).__replayRoom = room
+    rooms.game = room as unknown as Room<GameState>
+    // Pre-set the spectated player so the renderer's map/board callbacks target the right player.
+    const self = room.state?.players?.get(manifest.viewerUid)
+    if (self) dispatch(setPlayer(self))
     setSeeking(isSeek)
     setPlaying(false)
-    setShowGame(false) // unmount <Game/> → ReplayGameHost cleanup destroys the old Phaser game
-    setBootNonce((n) => n + 1)
-  }
 
-  // Step 2 of boot: once <Game/> has unmounted, give Phaser a beat to finish its deferred teardown, then
-  // build the fresh room (and run the "self" dispatches now that no stale game components are mounted)
-  // and remount. Re-fires per boot via bootNonce.
-  useEffect(() => {
-    const job = pendingBoot.current
-    if (!job) return
-    let cancelled = false
-    const id = setTimeout(() => {
-      if (cancelled) return
-      const manifest = manifestRef.current
-      if (!manifest) return
-      const room = new ReplayRoom(manifest, {
-        speed: job.speed,
-        startMs: job.atMs,
-        focusMode: job.focusMode
-      })
-      replayRoom.current = room
-      // Dev/test hook: lets the headless verify harness read playback state (currentMs, focus, paused)
-      // at ms precision, below the controls' mm:ss display. Harmless; remove before the upstream PR.
-      ;(window as unknown as { __replayRoom?: ReplayRoom }).__replayRoom = room
-      rooms.game = room as unknown as Room<GameState>
-      // Present the recording's viewer as the logged-in user so the page's "self" logic resolves.
-      dispatch(logIn({ uid: manifest.viewerUid, displayName: manifest.viewerUid } as User))
-      // Pre-set the spectated player so the renderer's map/board callbacks target the right player.
-      const self = room.state?.players?.get(manifest.viewerUid)
-      if (self) dispatch(setPlayer(self))
-      bootPausedRef.current = job.paused
-      pendingBoot.current = null
+    const gc = getGameContainer()
+    if (isSeek && gc?.game) {
+      // Re-attach: remember the outgoing board so the wait-effect can tell the fresh scene apart, then
+      // re-point the persistent GameContainer at the new room and restart its scene (Phaser kept alive).
+      prevBoardRef.current = gc.gameScene?.board ?? null
+      reattachReplayRoom(room as unknown as Room<GameState>)
+    } else {
+      // Initial load: present the recording's viewer as the logged-in user so the page resolves "self",
+      // then mount <Game/> (its init creates the Phaser game + installs the re-attach hook).
+      dispatch(
+        logIn({
+          uid: manifest.viewerUid,
+          displayName: manifest.viewerUid
+        } as User)
+      )
+      prevBoardRef.current = null
       setReady(true)
       setShowGame(true)
       setGen((g) => g + 1)
-    }, 150)
-    return () => {
-      cancelled = true
-      clearTimeout(id)
     }
-  }, [bootNonce])
+    setSeekEpoch((n) => n + 1) // (re)run the wait-for-scene effect → startPlayback once the board is ready
+  }
 
   const loadManifest = (manifest: ReplayManifest) => {
     manifestRef.current = manifest
@@ -213,7 +244,9 @@ export default function Replay() {
     const room = replayRoom.current
     if (!room) return
     const i = SPEEDS.indexOf(room.getSpeed())
-    room.setSpeed(SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, (i < 0 ? 1 : i) + dir))])
+    room.setSpeed(
+      SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, (i < 0 ? 1 : i) + dir))]
+    )
   }
 
   // Keyboard shortcuts. Registered in the capture phase so they beat the game's own in-scene hotkeys
@@ -228,17 +261,45 @@ export default function Replay() {
       const seekIf = (t: number | null) => t != null && seekTo(t)
       let handled = true
       switch (e.key) {
-        case " ": room.ended ? restart() : room.togglePause(); break
-        case "ArrowRight": seekIf(idx && (e.shiftKey ? nextStage(idx, navMs()) : nextPhase(idx, navMs()))); break
-        case "ArrowLeft": seekIf(idx && (e.shiftKey ? prevStage(idx, navMs()) : prevPhase(idx, navMs()))); break
-        case "ArrowUp": cycleSpeed(1); break
-        case "ArrowDown": cycleSpeed(-1); break
-        case "Home": seekTo(0); break
-        case "End": seekTo(room.totalMs); break
-        case ".": stepForward(); break
-        case ",": stepBackward(); break
-        case "c": case "C": void copyLink(); break
-        default: handled = false
+        case " ":
+          room.ended ? restart() : room.togglePause()
+          break
+        case "ArrowRight":
+          seekIf(
+            idx &&
+              (e.shiftKey ? nextStage(idx, navMs()) : nextPhase(idx, navMs()))
+          )
+          break
+        case "ArrowLeft":
+          seekIf(
+            idx &&
+              (e.shiftKey ? prevStage(idx, navMs()) : prevPhase(idx, navMs()))
+          )
+          break
+        case "ArrowUp":
+          cycleSpeed(1)
+          break
+        case "ArrowDown":
+          cycleSpeed(-1)
+          break
+        case "Home":
+          seekTo(0)
+          break
+        case "End":
+          seekTo(room.totalMs)
+          break
+        case ".":
+          stepForward()
+          break
+        case ",":
+          stepBackward()
+          break
+        case "c":
+        case "C":
+          void copyLink()
+          break
+        default:
+          handled = false
       }
       if (handled) {
         e.preventDefault()
@@ -305,18 +366,25 @@ export default function Replay() {
       if (cancelled) return
       const gc = getGameContainer()
       const isCurrent = gc?.room === (room as unknown as Room<GameState>)
-      // Wait for the current room's board (its startGame ran). The loader is never fully idle in a game
-      // scene, so we don't gate on it; once the board exists we give the map/assets a short grace so
-      // playback doesn't open on a half-loaded scene. The 25s cap is a last resort for a very slow boot.
-      if (isCurrent && gc?.gameScene?.board) setTimeout(() => begin(gc), 2000)
-      else if (Date.now() - t0 > 25000) begin(gc)
-      else setTimeout(waitReady, 100)
+      const board = gc?.gameScene?.board
+      // Wait for the CURRENT room's scene to build a FRESH board (its startGame ran). A re-attach
+      // restarts the scene → a brand-new BoardManager, so we compare against the outgoing board to avoid
+      // latching onto the scene we just left. The loader is never fully idle in a game scene, so we
+      // don't gate on it; once the fresh board exists we give the map/assets a short grace — brief on a
+      // warm re-attach seek (assets cached), longer on the cold initial load. 25s cap = slow-boot guard.
+      if (isCurrent && board && board !== prevBoardRef.current) {
+        setTimeout(() => begin(gc), prevBoardRef.current ? 600 : 2000)
+      } else if (Date.now() - t0 > 25000) {
+        begin(gc)
+      } else {
+        setTimeout(waitReady, 100)
+      }
     }
     waitReady()
     return () => {
       cancelled = true
     }
-  }, [ready, gen])
+  }, [ready, seekEpoch])
 
   const pick = (f: File) =>
     f
@@ -324,15 +392,33 @@ export default function Replay() {
       .then((txt) => loadManifest(JSON.parse(txt) as ReplayManifest))
       .catch((e) => setError(String(e?.message ?? e)))
 
-  if (error) return <div id="status-message">Replay error: {error}</div>
+  if (error)
+    return (
+      <div className="replay-overlay">
+        <div className="my-container replay-overlay-card">
+          <div className="replay-overlay-title">Replay error</div>
+          <div className="replay-overlay-sub">{error}</div>
+        </div>
+      </div>
+    )
   if (needFile && !ready) return <FilePicker onPick={pick} />
-  if (!ready) return <div id="status-message">Loading replay…</div>
+  if (!ready)
+    return (
+      <div className="replay-overlay">
+        <div className="my-container replay-overlay-card">
+          <div className="replay-spinner" />
+          <div className="replay-overlay-title">Loading replay…</div>
+          <div className="replay-overlay-sub">preparing the match</div>
+        </div>
+      </div>
+    )
   return (
     <>
-      {/* The game is unmounted between boots (showGame=false) so the old Phaser scene is fully torn
-          down before the next one mounts; keyed by `gen` for a clean boundary + fresh GameContainer per
-          boot. ReplayErrorBoundary contains render errors (e.g. clicking unsupported UI) to a
-          recoverable fallback instead of unmounting the whole app. */}
+      {/* <Game/> mounts once and stays mounted for the whole session — seeks re-attach the scene in
+          place (reattachReplayRoom) rather than remount, so the Phaser game and its loaded assets
+          persist. `gen` keys a clean boundary per mount (only the initial load bumps it).
+          ReplayErrorBoundary contains render errors (e.g. clicking unsupported UI) to a recoverable
+          fallback instead of unmounting the whole app. */}
       {showGame && (
         <ReplayErrorBoundary key={gen}>
           <ReplayGameHost />
@@ -341,10 +427,15 @@ export default function Replay() {
       {/* Cover the (re)booting scene until playback starts (high z-index so it sits over the sidebar/HUD),
           so it doesn't look frozen / start mid-round, and so a seek doesn't flash the half-built scene. */}
       {!playing && (
-        <div style={{ ...P.wrap, zIndex: 1500 }}>
-          <div style={P.card}>
-            <div style={P.title}>{seeking ? "Seeking…" : "Loading replay…"}</div>
-            <div style={P.sub}>{seeking ? "rebuilding the scene" : "preparing the match"}</div>
+        <div className="replay-overlay">
+          <div className="my-container replay-overlay-card">
+            <div className="replay-spinner" />
+            <div className="replay-overlay-title">
+              {seeking ? "Seeking…" : "Loading replay…"}
+            </div>
+            <div className="replay-overlay-sub">
+              {seeking ? "rebuilding the scene" : "preparing the match"}
+            </div>
           </div>
         </div>
       )}
@@ -364,9 +455,10 @@ export default function Replay() {
   )
 }
 
-// Wraps the unchanged <Game/> and destroys its Phaser game on unmount. Nothing else does (the game's
-// own teardown only runs on the leave flow), and a seek unmounts this host to start a fresh scene, so
-// the old game must be torn down here or it leaks and its callbacks fire into a dead scene.
+// Wraps the unchanged <Game/> and destroys its Phaser game on unmount. The game's own teardown only
+// runs on the live leave flow (which a replay skips), and this host now stays mounted across seeks
+// (they re-attach in place), so this fires only when leaving the /replay route — tearing the Phaser
+// game down there so it doesn't leak or fire callbacks into a dead scene.
 function ReplayGameHost() {
   useEffect(
     () => () => {
@@ -384,58 +476,39 @@ function ReplayGameHost() {
 function FilePicker({ onPick }: { onPick: (f: File) => void }) {
   const [over, setOver] = useState(false)
   return (
-    <div
-      style={P.wrap}
-      onDragOver={(e) => {
-        e.preventDefault()
-        setOver(true)
-      }}
-      onDragLeave={() => setOver(false)}
-      onDrop={(e) => {
-        e.preventDefault()
-        setOver(false)
-        const f = e.dataTransfer.files?.[0]
-        if (f) onPick(f)
-      }}
-    >
-      <div style={{ ...P.card, ...(over ? P.cardOver : null) }}>
-        <div style={P.title}>Watch a replay</div>
-        <div style={P.sub}>
-          Drop a <code>.colreplay.json</code> file here, or choose one:
+    <div className="replay-overlay">
+      <div
+        className="my-container replay-overlay-card"
+        onDragOver={(e) => {
+          e.preventDefault()
+          setOver(true)
+        }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setOver(false)
+          const f = e.dataTransfer.files?.[0]
+          if (f) onPick(f)
+        }}
+      >
+        <div className="replay-overlay-title">Watch a replay</div>
+        <div className={`replay-dropzone${over ? " over" : ""}`}>
+          <div className="replay-overlay-sub">
+            Drop a <code>.colreplay.json</code> file here, or choose one:
+          </div>
+          <label className="bubbly blue replay-file-label">
+            Choose a file
+            <input
+              type="file"
+              accept=".json,.colreplay,application/json"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) onPick(f)
+              }}
+            />
+          </label>
         </div>
-        <input
-          type="file"
-          accept=".json,.colreplay,application/json"
-          onChange={(e) => {
-            const f = e.target.files?.[0]
-            if (f) onPick(f)
-          }}
-        />
       </div>
     </div>
   )
-}
-
-const P: Record<string, CSSProperties> = {
-  wrap: {
-    position: "fixed",
-    inset: 0,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "#11151c",
-    color: "#dfe5ef",
-    font: "14px/1.5 sans-serif"
-  },
-  card: {
-    padding: "28px 36px",
-    background: "rgba(28,33,45,0.95)",
-    border: "1px dashed #3a4358",
-    borderRadius: 12,
-    textAlign: "center",
-    maxWidth: 420
-  },
-  cardOver: { borderColor: "#3b7ddd", background: "rgba(40,60,95,0.95)" },
-  title: { fontSize: 18, fontWeight: 700, marginBottom: 8 },
-  sub: { opacity: 0.8, marginBottom: 16 }
 }

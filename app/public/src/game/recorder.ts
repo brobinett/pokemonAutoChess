@@ -1,5 +1,13 @@
 import { Room, SchemaSerializer } from "@colyseus/sdk"
 import { rooms } from "../network"
+import store from "../stores"
+import {
+  appendFrames,
+  loadFrames,
+  pruneOld,
+  storedInfo,
+  type StoredFrame
+} from "./recorder-store"
 import type { ReplayManifest } from "./replay-room"
 
 // In-client match recorder. Taps the live client's own inbound Colyseus stream — the exact same seam
@@ -37,7 +45,76 @@ export function getActiveGameRoom(): Room | null {
   return rooms.game ?? lastGameRoom
 }
 
-const push = (map: WeakMap<object, CapturedFrame[]>, key: object, frame: CapturedFrame) => {
+// The game build a recording was made in. TODO: source from a build-time constant once available.
+const GAME_BUILD = {
+  version: "6.10.1",
+  commit: "deployed",
+  serializerId: "schema"
+}
+
+// --- durable flush (IndexedDB) -------------------------------------------------------------------
+// Frames live in memory only until flushed; a crash/reload wipes them, so the download after a
+// reconnect used to lose everything before the crash. We flush to IndexedDB ~1s at a time, keyed by
+// roomId — reconnect rejoins the same roomId, so the recording survives a crash. See recorder-store.ts.
+const FLUSH_MS = 1000
+const RETAIN_MS = 2 * 24 * 60 * 60 * 1000 // prune recordings whose last activity is older than 2 days
+
+const toStored =
+  (room: string) =>
+  (f: CapturedFrame): StoredFrame => ({
+    room,
+    t: f.t,
+    seq: f.seq,
+    kind: f.kind,
+    offset: f.offset,
+    bytes: f.bytes,
+    type: f.type,
+    payload: f.payload
+  })
+
+// Flushes MUST be serialized: the 1s interval and the on-download flush (buildReplay) can otherwise
+// overlap, and a second flush would read the SAME un-spliced prefix — writing duplicate state/patch
+// frames (which the ReplayRoom would re-apply to the decoder → desync) and over-trimming the buffer.
+// We chain every flush through a single promise so they run strictly one at a time.
+let flushChain: Promise<void> = Promise.resolve()
+
+/** Persist the active game's newly-captured frames to durable storage. Serialized (see flushChain);
+ * returns once this flush AND any already-queued ones have completed, so the download can await it. */
+export function flushRoom(room: Room | null): Promise<void> {
+  flushChain = flushChain
+    .then(() => flushRoomImpl(room))
+    .catch((e) => console.error("[recorder] flush failed", e))
+  return flushChain
+}
+
+/** Persist the un-flushed prefix of `room`'s in-memory buffers, then trim what was persisted (memory
+ * stays bounded for long games). Skips the replay room — watching a replay re-runs the serializer taps
+ * and we don't record replays. On append failure nothing is trimmed → retried on the next flush. Never
+ * call directly; go through flushRoom so flushes stay serialized. */
+async function flushRoomImpl(room: Room | null): Promise<void> {
+  if (!room || room.roomId === "replay") return
+  const ser = (room as unknown as { serializer: object }).serializer
+  const sAll = stateCaptures.get(ser)
+  const mAll = msgCaptures.get(room)
+  const sLen = sAll?.length ?? 0
+  const mLen = mAll?.length ?? 0
+  if (sLen + mLen === 0) return
+  const batch = [...(sAll ?? []).slice(0, sLen), ...(mAll ?? []).slice(0, mLen)]
+    .sort((a, b) => a.seq - b.seq)
+    .map(toStored(room.roomId))
+  await appendFrames(room.roomId, batch, {
+    viewerUid: store.getState().network.uid,
+    version: GAME_BUILD.version
+  })
+  sAll?.splice(0, sLen) // frames captured during the async append remain for the next flush
+  mAll?.splice(0, mLen)
+}
+
+const push = (
+  map: WeakMap<object, CapturedFrame[]>,
+  key: object,
+  frame: CapturedFrame
+) => {
   let arr = map.get(key)
   if (!arr) map.set(key, (arr = []))
   arr.push(frame)
@@ -62,7 +139,11 @@ export function installRecorder() {
     setState: (b: Uint8Array, it?: { offset: number }) => unknown
     patch: (b: Uint8Array, it?: { offset: number }) => unknown
   }
-  const tap = (orig: (b: Uint8Array, it?: { offset: number }) => unknown, kind: CapturedFrame["kind"], defaultOffset: number) =>
+  const tap = (
+    orig: (b: Uint8Array, it?: { offset: number }) => unknown,
+    kind: CapturedFrame["kind"],
+    defaultOffset: number
+  ) =>
     function (this: object, bytes: Uint8Array, it?: { offset: number }) {
       push(stateCaptures, this, {
         t: Date.now(),
@@ -77,47 +158,72 @@ export function installRecorder() {
   S.setState = tap(S.setState, "state", 1)
   S.patch = tap(S.patch, "patch", 1)
 
-  const R = Room.prototype as unknown as { dispatchMessage: (t: string | number, m: unknown) => unknown }
+  const R = Room.prototype as unknown as {
+    dispatchMessage: (t: string | number, m: unknown) => unknown
+  }
   const origDispatch = R.dispatchMessage
-  R.dispatchMessage = function (this: object, type: string | number, message: unknown) {
+  R.dispatchMessage = function (
+    this: object,
+    type: string | number,
+    message: unknown
+  ) {
     if (rooms.game) lastGameRoom = rooms.game // retain the game room for the after-game download
-    push(msgCaptures, this, { t: Date.now(), seq: seq++, kind: "message", type, payload: serializePayload(message) })
+    push(msgCaptures, this, {
+      t: Date.now(),
+      seq: seq++,
+      kind: "message",
+      type,
+      payload: serializePayload(message)
+    })
     return origDispatch.call(this, type, message)
   }
+
+  // Periodically flush the active game's frames to durable storage so a crash can't lose them, and drop
+  // stale recordings on startup so IndexedDB doesn't grow without bound.
+  setInterval(() => void flushRoom(getActiveGameRoom()), FLUSH_MS)
+  void pruneOld(RETAIN_MS, Date.now()).catch(() => {})
 }
 
-/** Captured frame count + span for the given room (for the recording indicator). O(1): frames are
- * pushed in receive order, so first/last elements bound the span — avoids spreading thousands of
- * frames on every poll (which caused GC jank during long games). */
-export function getCaptureInfo(room: Room | undefined): { frames: number; ms: number } {
-  if (!room) return { frames: 0, ms: 0 }
-  const s = stateCaptures.get((room as unknown as { serializer: object }).serializer) ?? []
-  const m = msgCaptures.get(room) ?? []
-  const frames = s.length + m.length
-  if (frames === 0) return { frames: 0, ms: 0 }
-  const firstT = Math.min(s.length ? s[0].t : Infinity, m.length ? m[0].t : Infinity)
-  const lastT = Math.max(s.length ? s[s.length - 1].t : -Infinity, m.length ? m[m.length - 1].t : -Infinity)
-  return { frames, ms: lastT - firstT }
+/** Durable recording summary (frame count + span) for the after-game indicator. Reads the persisted
+ * meta, so it reflects the WHOLE recording including anything captured before a crash + reconnect —
+ * unlike the in-memory buffers, which only hold the current page's frames (and get trimmed on flush). */
+export async function getStoredCaptureInfo(
+  room: Room | undefined
+): Promise<{ frames: number; ms: number }> {
+  if (!room || room.roomId === "replay") return { frames: 0, ms: 0 }
+  const { frames, ms } = await storedInfo(room.roomId)
+  return { frames, ms }
 }
 
-/** Assemble a .colreplay manifest from what this client received for `room`. */
-export function buildReplay(room: Room, viewerUid: string): ReplayManifest {
-  const ser = (room as unknown as { serializer: object }).serializer
-  const sframes = stateCaptures.get(ser) ?? []
-  const mframes = msgCaptures.get(room) ?? []
-  const all = [...sframes, ...mframes].sort((a, b) => a.seq - b.seq)
+/** Assemble a .colreplay manifest from the DURABLE capture for `room`. Flushes any in-memory tail
+ * first, then reads every persisted frame (in arrival order) — so a recording that spanned a crash +
+ * reconnect comes out whole. */
+export async function buildReplay(
+  room: Room,
+  viewerUid: string
+): Promise<ReplayManifest> {
+  await flushRoom(room) // persist the last in-memory frames before reading
+  const all = await loadFrames(room.roomId)
   const t0 = all.length ? all[0].t : 0
   const frames = all.map((f) =>
     f.kind === "message"
-      ? { t: f.t - t0, kind: "message" as const, type: f.type, payload: f.payload }
-      : { t: f.t - t0, kind: f.kind, offset: f.offset, b64: bytesToB64(f.bytes!) }
+      ? {
+          t: f.t - t0,
+          kind: "message" as const,
+          type: f.type,
+          payload: f.payload
+        }
+      : {
+          t: f.t - t0,
+          kind: f.kind,
+          offset: f.offset,
+          b64: bytesToB64(f.bytes!)
+        }
   )
   return {
     format: "colreplay-v0",
     schemaVersion: 0,
-    // TODO: source these from a build-time constant once available; the viewer plays back in the
-    // same build, so exact values aren't load-bearing for the PoC.
-    game: { version: "6.10.1", commit: "deployed", serializerId: "schema" },
+    game: { ...GAME_BUILD },
     room: "game",
     viewerUid,
     recordedAt: new Date().toISOString(),
@@ -126,9 +232,11 @@ export function buildReplay(room: Room, viewerUid: string): ReplayManifest {
 }
 
 /** Build the replay and trigger a browser download. */
-export function downloadReplay(room: Room, viewerUid: string) {
-  const manifest = buildReplay(room, viewerUid)
-  const blob = new Blob([JSON.stringify(manifest)], { type: "application/json" })
+export async function downloadReplay(room: Room, viewerUid: string) {
+  const manifest = await buildReplay(room, viewerUid)
+  const blob = new Blob([JSON.stringify(manifest)], {
+    type: "application/json"
+  })
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
   a.href = url
