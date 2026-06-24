@@ -129,6 +129,9 @@ export default function Replay() {
         )
       dispatch(leaveGame(undefined)) // arity-0 reducer; RTK types it as needing an (ignored) payload
       rooms.game = undefined
+      // Drop the dev/test hook so it can't retain the last ReplayRoom (+ its whole transcript) into the
+      // next live game.
+      delete (window as unknown as { __replayRoom?: ReplayRoom }).__replayRoom
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
@@ -163,6 +166,11 @@ export default function Replay() {
     // Pre-set the spectated player so the renderer's map/board callbacks target the right player.
     const self = room.state?.players?.get(manifest.viewerUid)
     if (self) dispatch(setPlayer(self))
+    // A recording that spanned a disconnect/reconnect has a 2nd handshake mid-stream; crossing it during
+    // timed playback would swap the decoder and freeze the renderer. Re-attach across it via the seek
+    // path (which rebuilds the decoder with no renderer attached, then re-binds) — the boundary frame's
+    // huge wall-clock gap is collapsed by the seek too.
+    room.onRebindNeeded((ms) => boot(ms, true))
     setSeeking(isSeek)
     setPlaying(false)
 
@@ -340,6 +348,7 @@ export default function Replay() {
     const room = replayRoom.current
     if (!room) return
     let cancelled = false
+    let pending: ReturnType<typeof setTimeout> | null = null // the in-flight poll OR grace timer
     const t0 = Date.now()
     const begin = (gc: ReturnType<typeof getGameContainer>) => {
       if (cancelled) return
@@ -373,16 +382,17 @@ export default function Replay() {
       // don't gate on it; once the fresh board exists we give the map/assets a short grace — brief on a
       // warm re-attach seek (assets cached), longer on the cold initial load. 25s cap = slow-boot guard.
       if (isCurrent && board && board !== prevBoardRef.current) {
-        setTimeout(() => begin(gc), prevBoardRef.current ? 600 : 2000)
+        pending = setTimeout(() => begin(gc), prevBoardRef.current ? 600 : 2000)
       } else if (Date.now() - t0 > 25000) {
         begin(gc)
       } else {
-        setTimeout(waitReady, 100)
+        pending = setTimeout(waitReady, 100)
       }
     }
     waitReady()
     return () => {
       cancelled = true
+      if (pending) clearTimeout(pending) // don't let a stale poll/grace timer fire begin() after a re-seek
     }
   }, [ready, seekEpoch])
 

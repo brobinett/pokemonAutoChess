@@ -81,6 +81,12 @@ export class ReplayRoom {
   paused = false
   ended = false
   private endedHandlers = new Set<() => void>()
+  // Fired when timed playback reaches a reconnect boundary (a 2nd handshake mid-stream, from a recording
+  // that spanned a disconnect). The page must re-attach there rather than let us apply it: re-applying a
+  // handshake builds a NEW decoder, orphaning the renderer's callbacks → the board freezes. replay.tsx
+  // wires this to its seek path, which rebuilds a fresh ReplayRoom fast-forwarded past the boundary and
+  // re-binds the new decoder (the proven seek machinery).
+  private rebindHandlers = new Set<(ms: number) => void>()
 
   // --- listener registries (mirror Colyseus Room emitters) ---
   private messageHandlers = new Map<string | number, Set<Handler>>()
@@ -98,9 +104,13 @@ export class ReplayRoom {
     this.baseSpeed = opts.speed && opts.speed > 0 ? opts.speed : 1
     this.focusMode = opts.focusMode ?? "off" // carried across seek reboots so the mode sticks
     this.startMs = opts.startMs && opts.startMs > 0 ? opts.startMs : 0
-    this.totalMs = manifest.frames.length ? manifest.frames[manifest.frames.length - 1].t : 0
+    this.totalMs = manifest.frames.length
+      ? manifest.frames[manifest.frames.length - 1].t
+      : 0
     this.gameStartMs =
-      manifest.frames.find((f) => f.kind === "message" && f.type === "LOADING_COMPLETE")?.t ?? 0
+      manifest.frames.find(
+        (f) => f.kind === "message" && f.type === "LOADING_COMPLETE"
+      )?.t ?? 0
 
     // Apply the handshake + the initial full-state snapshot synchronously, so `room.state` is fully
     // populated by the time the game page mounts. When the renderer later attaches its callbacks,
@@ -111,7 +121,10 @@ export class ReplayRoom {
     const firstStateIdx = frames.findIndex((f) => f.kind === "state")
     for (let i = 0; i < frames.length; i++) {
       const f = frames[i]
-      if (i <= firstStateIdx && (f.kind === "handshake" || f.kind === "state")) {
+      if (
+        i <= firstStateIdx &&
+        (f.kind === "handshake" || f.kind === "state")
+      ) {
         this.applyFrame(f)
       } else {
         this.queue.push(f)
@@ -133,7 +146,8 @@ export class ReplayRoom {
     while (this.idx < this.queue.length && this.queue[this.idx].t <= ms) {
       const f = this.queue[this.idx]
       if (f.kind === "message") {
-        if (f.type === "PRELOAD_MAPS") this.preloadMapsPayload = this.decodePayload(f.payload)
+        if (f.type === "PRELOAD_MAPS")
+          this.preloadMapsPayload = this.decodePayload(f.payload)
       } else {
         this.applyFrame(f)
       }
@@ -159,7 +173,11 @@ export class ReplayRoom {
   }
 
   private decodePayload(payload: unknown): unknown {
-    if (payload && typeof payload === "object" && "__bytes__" in (payload as object)) {
+    if (
+      payload &&
+      typeof payload === "object" &&
+      "__bytes__" in (payload as object)
+    ) {
       return b64ToBytes((payload as { __bytes__: string }).__bytes__)
     }
     return payload
@@ -228,7 +246,11 @@ export class ReplayRoom {
     let guard = 0
     const gameStarted = () =>
       (this.state?.avatars?.size ?? 0) > 0 || (this.state?.stageLevel ?? 1) >= 1
-    while (this.idx < this.queue.length && !gameStarted() && guard++ < this.queue.length) {
+    while (
+      this.idx < this.queue.length &&
+      !gameStarted() &&
+      guard++ < this.queue.length
+    ) {
       if (!this.applyNext()) break
     }
   }
@@ -251,6 +273,15 @@ export class ReplayRoom {
     const next = this.queue[this.idx]
     if (!next) {
       this.finish()
+      return
+    }
+    // Reconnect boundary: a handshake in the queue (segment 1's handshake is applied in the constructor,
+    // so any queued handshake is a 2nd one). Don't apply it — re-applying a handshake swaps the decoder
+    // and orphans the renderer's callbacks (board freezes). Ask the page to re-attach past it instead;
+    // that also collapses the wall-clock outage gap (otherwise this would be one huge setTimeout). With
+    // no handler wired (e.g. a unit test), fall through and apply — the old behavior.
+    if (next.kind === "handshake" && this.rebindHandlers.size > 0) {
+      this.rebindHandlers.forEach((h) => h(this.rebindTargetAt()))
       return
     }
     const dt = Math.max(0, (next.t - this.currentMs) / this.effectiveSpeed())
@@ -330,11 +361,31 @@ export class ReplayRoom {
     let advanced = false
     while (this.idx < this.queue.length) {
       const kind = this.queue[this.idx].kind
+      if (kind === "handshake" && this.rebindHandlers.size > 0) {
+        this.rebindHandlers.forEach((h) => h(this.rebindTargetAt())) // reconnect boundary → re-attach
+        break
+      }
       if (!this.applyNext()) break
       advanced = true
       if (kind !== "message") break // stop after one real state update
     }
     return advanced
+  }
+
+  /** The seek target for a reconnect boundary: the t of the reconnect's full-state frame (right after
+   * the 2nd handshake), so a re-attach fast-forwards THROUGH handshake₂+state₂ (rebuilding the decoder
+   * with no renderer attached) and resumes just after it. */
+  private rebindTargetAt(): number {
+    for (let j = this.idx; j < this.queue.length; j++) {
+      if (this.queue[j].kind === "state") return this.queue[j].t
+    }
+    return this.queue[this.idx]?.t ?? this.currentMs
+  }
+
+  /** Register a reconnect-boundary handler (replay.tsx wires it to a seek). Returns an unsubscribe. */
+  onRebindNeeded(cb: (ms: number) => void) {
+    this.rebindHandlers.add(cb)
+    return () => this.rebindHandlers.delete(cb)
   }
 
   // Seeking is handled by replay.tsx rebooting a fresh ReplayRoom at the target time (boot()) — both
@@ -358,7 +409,8 @@ export class ReplayRoom {
 
   // --- Colyseus Room API subset ---------------------------------------------------------------
   onMessage(type: string | number, cb: Handler) {
-    if (!this.messageHandlers.has(type)) this.messageHandlers.set(type, new Set())
+    if (!this.messageHandlers.has(type))
+      this.messageHandlers.set(type, new Set())
     this.messageHandlers.get(type)!.add(cb)
     this.maybeReveal()
     return () => this.messageHandlers.get(type)?.delete(cb)

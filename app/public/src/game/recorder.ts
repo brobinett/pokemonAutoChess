@@ -145,13 +145,20 @@ export function installRecorder() {
     defaultOffset: number
   ) =>
     function (this: object, bytes: Uint8Array, it?: { offset: number }) {
-      push(stateCaptures, this, {
-        t: Date.now(),
-        seq: seq++,
-        kind,
-        offset: it?.offset ?? defaultOffset,
-        bytes: bytes.slice() // copy: the SDK reuses the underlying buffer for later messages
-      })
+      // Capture is best-effort and must NEVER break the live client's decode: wrap it so any failure
+      // (e.g. OOM under capture pressure) falls through to orig. The recorder sits in the live decode
+      // hot path — this is the structural guard against the "additive code reaches into live" risk.
+      try {
+        push(stateCaptures, this, {
+          t: Date.now(),
+          seq: seq++,
+          kind,
+          offset: it?.offset ?? defaultOffset,
+          bytes: bytes.slice() // copy: the SDK reuses the underlying buffer for later messages
+        })
+      } catch (e) {
+        console.error("[recorder] capture failed (live decode unaffected)", e)
+      }
       return orig.call(this, bytes, it)
     }
   S.handshake = tap(S.handshake, "handshake", 0)
@@ -167,14 +174,21 @@ export function installRecorder() {
     type: string | number,
     message: unknown
   ) {
-    if (rooms.game) lastGameRoom = rooms.game // retain the game room for the after-game download
-    push(msgCaptures, this, {
-      t: Date.now(),
-      seq: seq++,
-      kind: "message",
-      type,
-      payload: serializePayload(message)
-    })
+    try {
+      if (rooms.game) lastGameRoom = rooms.game // retain the game room for the after-game download
+      push(msgCaptures, this, {
+        t: Date.now(),
+        seq: seq++,
+        kind: "message",
+        type,
+        payload: serializePayload(message)
+      })
+    } catch (e) {
+      console.error(
+        "[recorder] message capture failed (live dispatch unaffected)",
+        e
+      )
+    }
     return origDispatch.call(this, type, message)
   }
 
