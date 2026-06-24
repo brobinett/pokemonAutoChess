@@ -38,11 +38,29 @@
   font-size: 120%;
 }
 
+/* skip-by-phase/stage buttons: same chunky .bubbly, a touch narrower than play; dimmed when at an end */
+.replay-controls .bubbly.rc-skip {
+  font-size: 110%;
+  min-width: 1.8em;
+}
+.replay-controls .bubbly.rc-skip:disabled {
+  opacity: 0.35;
+  cursor: default;
+  box-shadow: var(--shadow-clickable);
+}
+
 .replay-controls .rc-time {
   font-variant-numeric: tabular-nums;
   color: var(--color-fg-secondary);
   min-width: 3em;
   text-align: center;
+}
+
+/* wraps the track so the hover tooltip can sit above it without being clipped by the track's overflow */
+.replay-controls .rc-track-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
 }
 
 .replay-controls .rc-track {
@@ -56,15 +74,161 @@
   cursor: pointer;
   overflow: hidden;
 }
+
+/* hover preview: a guide line on the track at the cursor + a tooltip above it (time + stage·phase,
+ * or the nearest event). Index data only — no rendered thumbnail (that would need a reboot-seek). */
+.replay-controls .rc-hover-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  transform: translateX(-0.5px);
+  background: var(--color-fg-primary);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.replay-controls .rc-hover-tip {
+  position: absolute;
+  bottom: calc(100% + 7px);
+  transform: translateX(-50%);
+  display: flex;
+  gap: 0.45em;
+  align-items: baseline;
+  white-space: nowrap;
+  padding: 2px 7px;
+  font-size: 11px;
+  background: var(--color-bg-input);
+  border: var(--border-thin);
+  border-radius: 6px;
+  box-shadow: var(--shadow-clickable);
+  pointer-events: none;
+  z-index: 10;
+}
+.replay-controls .rc-hover-time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--color-fg-primary);
+}
+.replay-controls .rc-hover-seg {
+  color: var(--color-fg-secondary);
+}
+.replay-controls .rc-hover-seg.fight {
+  color: var(--color-fg-red);
+}
+.replay-controls .rc-hover-seg.town {
+  color: var(--color-fg-accent);
+}
+.replay-controls .rc-hover-evt {
+  font-weight: 700;
+  color: var(--color-fg-red);
+}
+/* Played-region overlay: translucent so the phase bands beneath stay visible. */
 .replay-controls .rc-fill {
   position: absolute;
   inset: 0 auto 0 0;
-  background: var(--color-bg-accent);
+  background: rgba(255, 255, 255, 0.18);
+  pointer-events: none;
+}
+
+/* Phase bands: the match rhythm at a glance. Prep is the neutral track; fights warm, town cool. */
+.replay-controls .rc-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+.replay-controls .rc-band.fight {
+  background: rgba(232, 18, 18, 0.32);
+}
+.replay-controls .rc-band.town {
+  background: rgba(17, 149, 236, 0.3);
+}
+/* .pick (prep) intentionally has no band — it reads as the base track colour. */
+
+/* Playhead: where we are now. */
+.replay-controls .rc-playhead {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  transform: translateX(-1px);
+  background: var(--color-fg-primary);
+  pointer-events: none;
+}
+
+/* Timeline markers on the scrubber: thin phase ticks, taller/brighter stage starts, red
+ * eliminations. Each is a click-to-seek button with a wider-than-visible hit area (the button spans
+ * a few px; the visible line is a centered ::before) so they're easy to grab. */
+.replay-controls .rc-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  transform: translateX(-50%);
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+.replay-controls .rc-mark::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  top: 30%;
+  bottom: 30%;
+  background: var(--color-fg-secondary);
+  opacity: 0.6;
+}
+.replay-controls .rc-mark:hover::before {
+  opacity: 1;
+}
+.replay-controls .rc-mark.stage::before {
+  width: 2px;
+  top: 0;
+  bottom: 0;
+  background: var(--color-fg-primary);
+  opacity: 0.85;
+}
+.replay-controls .rc-mark.elimination::before {
+  width: 3px;
+  top: 0;
+  bottom: 0;
+  background: var(--color-fg-red);
+  opacity: 1;
 }
 
 .replay-controls .rc-speeds {
   display: flex;
   gap: 0.25em;
+}
+
+/* frame-step cluster (shown when paused) */
+.replay-controls .rc-step {
+  display: flex;
+  gap: 0.25em;
+}
+
+/* focus auto-speed (fast-forward prep / fights) */
+.replay-controls .rc-focus {
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+}
+.replay-controls .rc-focus-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--color-fg-secondary);
+}
+.replay-controls .rc-focus .bubbly {
+  min-width: unset;
+}
+
+/* copy-link button; flashes green ✓ on success */
+.replay-controls .rc-copy {
+  min-width: 2.1em;
 }
 
 .replay-controls .rc-label {

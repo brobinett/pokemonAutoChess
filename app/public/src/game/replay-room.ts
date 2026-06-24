@@ -1,6 +1,15 @@
 import { SchemaSerializer, type Room } from "@colyseus/sdk"
 import type { Iterator } from "@colyseus/schema"
 import type GameState from "../../../rooms/states/game-state"
+import { GamePhaseState } from "../../../types/enum/Game"
+
+// "Focus" auto-speed: watch one part of the match at the chosen speed and fast-forward the rest, by
+// flexing the playback cadence per phase (no reboot/seek — it just changes the frame interval).
+//   "off"    — the chosen speed everywhere
+//   "prep"   — fast-forward PICK/TOWN, watch FIGHTs at the chosen speed (the action)
+//   "fights" — fast-forward FIGHTs, watch PICK/TOWN at the chosen speed (where the player actually decides)
+export type FocusMode = "off" | "prep" | "fights"
+const FAST_SPEED = 8 // multiplier used for the fast-forwarded phase
 
 // A ReplayRoom plays back a recorded match transcript through the EXISTING client renderer
 // without a live server. The client renders entirely from Colyseus decoder callbacks
@@ -58,7 +67,8 @@ export class ReplayRoom {
   private queue: ReplayFrame[] = []
   private idx = 0
   private timer: ReturnType<typeof setTimeout> | null = null
-  private speed: number
+  private baseSpeed: number // the user-chosen speed (0.5–4×); the "focus" mode may run faster per phase
+  private focusMode: FocusMode = "off"
   private startMs: number
   private started = false
   private revealed = false
@@ -78,9 +88,13 @@ export class ReplayRoom {
   private dropHandlers = new Set<Handler>()
   private reconnectHandlers = new Set<Handler>()
 
-  constructor(manifest: ReplayManifest, opts: { speed?: number; startMs?: number } = {}) {
+  constructor(
+    manifest: ReplayManifest,
+    opts: { speed?: number; startMs?: number; focusMode?: FocusMode } = {}
+  ) {
     this.manifest = manifest
-    this.speed = opts.speed && opts.speed > 0 ? opts.speed : 1
+    this.baseSpeed = opts.speed && opts.speed > 0 ? opts.speed : 1
+    this.focusMode = opts.focusMode ?? "off" // carried across seek reboots so the mode sticks
     this.startMs = opts.startMs && opts.startMs > 0 ? opts.startMs : 0
     this.totalMs = manifest.frames.length ? manifest.frames[manifest.frames.length - 1].t : 0
     this.gameStartMs =
@@ -237,7 +251,7 @@ export class ReplayRoom {
       this.finish()
       return
     }
-    const dt = Math.max(0, (next.t - this.currentMs) / this.speed)
+    const dt = Math.max(0, (next.t - this.currentMs) / this.effectiveSpeed())
     this.timer = setTimeout(() => {
       if (this.paused || this.ended) return
       if (!this.applyNext()) this.finish()
@@ -275,12 +289,49 @@ export class ReplayRoom {
   }
 
   setSpeed(speed: number) {
-    if (speed > 0) this.speed = speed
+    if (speed > 0) this.baseSpeed = speed
     if (!this.paused && !this.ended) this.scheduleNext() // reschedule with the new cadence
   }
 
   getSpeed() {
-    return this.speed
+    return this.baseSpeed
+  }
+
+  /** The cadence the next interval should play at: the chosen speed, or FAST_SPEED for the phase the
+   * current focus mode fast-forwards (read off the live state.phase). */
+  private effectiveSpeed(): number {
+    if (this.focusMode === "off") return this.baseSpeed
+    const isFight = this.state?.phase === GamePhaseState.FIGHT
+    const fast = Math.max(FAST_SPEED, this.baseSpeed * 2)
+    if (this.focusMode === "prep") return isFight ? this.baseSpeed : fast
+    return isFight ? fast : this.baseSpeed // "fights": fast-forward the fights
+  }
+
+  /** Set the focus auto-speed mode; selecting the active one again turns it off. Reschedules so the
+   * new cadence takes effect immediately. */
+  setFocusMode(mode: FocusMode) {
+    this.focusMode = this.focusMode === mode ? "off" : mode
+    if (!this.paused && !this.ended) this.scheduleNext()
+  }
+
+  getFocusMode(): FocusMode {
+    return this.focusMode
+  }
+
+  /** Frame-step forward one visible update while paused: apply frames until one state/patch lands
+   * (consuming any cosmetic messages in between), so combat/board can be inspected tick by tick.
+   * Backward stepping is a reboot-seek (the decoder is forward-only) handled in replay.tsx. */
+  stepForward(): boolean {
+    if (this.ended) return false
+    this.pause()
+    let advanced = false
+    while (this.idx < this.queue.length) {
+      const kind = this.queue[this.idx].kind
+      if (!this.applyNext()) break
+      advanced = true
+      if (kind !== "message") break // stop after one real state update
+    }
+    return advanced
   }
 
   // Seeking is handled by replay.tsx rebooting a fresh ReplayRoom at the target time (boot()) — both

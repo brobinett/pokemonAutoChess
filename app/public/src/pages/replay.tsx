@@ -3,6 +3,14 @@ import type { User } from "@firebase/auth-types"
 import { type CSSProperties, useEffect, useRef, useState } from "react"
 import type GameState from "../../../rooms/states/game-state"
 import { GamePhaseState } from "../../../types/enum/Game"
+import {
+  buildReplayIndex,
+  nextPhase,
+  nextStage,
+  prevPhase,
+  prevStage,
+  type ReplayIndex
+} from "../game/replay-index"
 import { ReplayRoom, type ReplayManifest } from "../game/replay-room"
 import { useAppDispatch } from "../hooks"
 import { rooms } from "../network"
@@ -64,8 +72,20 @@ export default function Replay() {
   const initialized = useRef(false)
   const replayRoom = useRef<ReplayRoom | null>(null)
   const manifestRef = useRef<ReplayManifest | null>(null)
+  const indexRef = useRef<ReplayIndex | null>(null) // phase/stage/event index — built once per manifest
   const bootPausedRef = useRef(false)
-  const pendingBoot = useRef<{ atMs: number; paused: boolean; speed: number } | null>(null)
+  const pendingBoot = useRef<{
+    atMs: number
+    paused: boolean
+    speed: number
+    focusMode: ReturnType<ReplayRoom["getFocusMode"]>
+  } | null>(null)
+  // While a seek is rebuilding the scene, room.currentMs is stale (the new room/scene isn't ready yet),
+  // so phase/stage skips would all recompute the same jump from the frozen position — rapid clicks or a
+  // held arrow key wouldn't accumulate. Track the in-flight seek target and navigate relative to it
+  // until the seek settles; then fall back to the live position. Cleared in begin() when the scene is up.
+  const seekTargetRef = useRef<number | null>(null)
+  const navMs = () => seekTargetRef.current ?? replayRoom.current?.currentMs ?? 0
 
   const params = new URLSearchParams(window.location.search)
   const speed = Number(params.get("speed") ?? "1")
@@ -89,8 +109,10 @@ export default function Replay() {
     pendingBoot.current = {
       atMs: Math.max(0, atMs),
       paused: isSeek ? !!prev?.paused : false,
-      speed: prev?.getSpeed() ?? speed
+      speed: prev?.getSpeed() ?? speed,
+      focusMode: prev?.getFocusMode() ?? "off" // keep the focus auto-speed across a seek
     }
+    seekTargetRef.current = Math.max(0, atMs) // navigate relative to this until the seek settles
     prev?.pause() // stop the outgoing timer so it can't apply frames into the scene being torn down
     setSeeking(isSeek)
     setPlaying(false)
@@ -109,8 +131,15 @@ export default function Replay() {
       if (cancelled) return
       const manifest = manifestRef.current
       if (!manifest) return
-      const room = new ReplayRoom(manifest, { speed: job.speed, startMs: job.atMs })
+      const room = new ReplayRoom(manifest, {
+        speed: job.speed,
+        startMs: job.atMs,
+        focusMode: job.focusMode
+      })
       replayRoom.current = room
+      // Dev/test hook: lets the headless verify harness read playback state (currentMs, focus, paused)
+      // at ms precision, below the controls' mm:ss display. Harmless; remove before the upstream PR.
+      ;(window as unknown as { __replayRoom?: ReplayRoom }).__replayRoom = room
       rooms.game = room as unknown as Room<GameState>
       // Present the recording's viewer as the logged-in user so the page's "self" logic resolves.
       dispatch(logIn({ uid: manifest.viewerUid, displayName: manifest.viewerUid } as User))
@@ -131,12 +160,95 @@ export default function Replay() {
 
   const loadManifest = (manifest: ReplayManifest) => {
     manifestRef.current = manifest
+    // Index the transcript once (phase/stage boundaries + eliminations) for the skip controls and the
+    // timeline markers. Enhancement-only — a decode hiccup must not block playback, so swallow errors.
+    try {
+      indexRef.current = buildReplayIndex(manifest.frames)
+    } catch (e) {
+      console.error("[replay] failed to build index", e)
+      indexRef.current = null
+    }
     boot(startMs, false)
   }
 
   // Controls callbacks: every seek (either direction) and restart reboots at the target — see boot().
   const seekTo = (ms: number) => boot(ms, true)
   const restart = () => boot(0, true)
+
+  // Frame-step. Forward is instant (apply the next state update in place); backward is a reboot-seek
+  // to the previous state/patch frame (the decoder is forward-only, so there's no in-place rewind).
+  const stepForward = () => replayRoom.current?.stepForward()
+  const stepBackward = () => {
+    const room = replayRoom.current
+    const frames = manifestRef.current?.frames
+    if (!room || !frames) return
+    let prevT = 0
+    for (const f of frames) {
+      if (f.kind === "message") continue
+      if (f.t < room.currentMs) prevT = f.t
+      else break
+    }
+    seekTo(prevT)
+  }
+
+  // Copy a deep link to the current moment (?startMs=…). With a served recording (?file=…) the link
+  // reopens the exact same point — the killer feature for bug-repro ("watch from here"). Returns
+  // whether the clipboard write succeeded so the button can flash "Copied!".
+  const copyLink = async (): Promise<boolean> => {
+    const room = replayRoom.current
+    if (!room) return false
+    const url = new URL(window.location.href)
+    url.searchParams.set("startMs", String(Math.round(room.currentMs)))
+    url.searchParams.set("speed", String(room.getSpeed()))
+    try {
+      await navigator.clipboard.writeText(url.toString())
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  const SPEEDS = [0.5, 1, 2, 4]
+  const cycleSpeed = (dir: number) => {
+    const room = replayRoom.current
+    if (!room) return
+    const i = SPEEDS.indexOf(room.getSpeed())
+    room.setSpeed(SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, (i < 0 ? 1 : i) + dir))])
+  }
+
+  // Keyboard shortcuts. Registered in the capture phase so they beat the game's own in-scene hotkeys
+  // (which are no-ops in a replay anyway). Refs keep the once-registered handler current.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const room = replayRoom.current
+      if (!room) return
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === "INPUT" || tag === "TEXTAREA") return
+      const idx = indexRef.current
+      const seekIf = (t: number | null) => t != null && seekTo(t)
+      let handled = true
+      switch (e.key) {
+        case " ": room.ended ? restart() : room.togglePause(); break
+        case "ArrowRight": seekIf(idx && (e.shiftKey ? nextStage(idx, navMs()) : nextPhase(idx, navMs()))); break
+        case "ArrowLeft": seekIf(idx && (e.shiftKey ? prevStage(idx, navMs()) : prevPhase(idx, navMs()))); break
+        case "ArrowUp": cycleSpeed(1); break
+        case "ArrowDown": cycleSpeed(-1); break
+        case "Home": seekTo(0); break
+        case "End": seekTo(room.totalMs); break
+        case ".": stepForward(); break
+        case ",": stepBackward(); break
+        case "c": case "C": void copyLink(); break
+        default: handled = false
+      }
+      if (handled) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+    window.addEventListener("keydown", onKey, true)
+    return () => window.removeEventListener("keydown", onKey, true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (initialized.current) return
@@ -170,6 +282,7 @@ export default function Replay() {
     const t0 = Date.now()
     const begin = (gc: ReturnType<typeof getGameContainer>) => {
       if (cancelled) return
+      seekTargetRef.current = null // seek settled — navigate from the live position again
       // A replay is a spectate session: enabling spectate makes clicking a player's portrait switch
       // to their board (playerClick only does the local view-switch when scene.spectate is true).
       if (gc) {
@@ -236,7 +349,16 @@ export default function Replay() {
         </div>
       )}
       {replayRoom.current && (
-        <ReplayControls room={replayRoom.current} onSeek={seekTo} onRestart={restart} />
+        <ReplayControls
+          room={replayRoom.current}
+          index={indexRef.current}
+          navMs={navMs}
+          onSeek={seekTo}
+          onRestart={restart}
+          onStepForward={stepForward}
+          onStepBackward={stepBackward}
+          onCopyLink={copyLink}
+        />
       )}
     </>
   )
