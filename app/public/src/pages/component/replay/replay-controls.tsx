@@ -69,9 +69,30 @@ export default function ReplayControls({
   // no render. xPct positions the tooltip + guide line along the track.
   const [hover, setHover] = useState<{ xPct: number; ms: number; event: ReplayEvent | null } | null>(null)
 
-  // Draggable position. null → default top-center (clear of the shop, which spans the bottom).
+  // Draggable position. null → default dock just above the shop (between the shop and the bench).
   const barRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ x: number; y: number } | null>(loadPos)
+
+  // Default dock: centered just above the shop strip. We measure the live `.game-shop` element (its
+  // height is viewport-relative) and anchor the bar's bottom edge a small gap above the shop's top,
+  // so it sits in the band between the shop and the bench. Re-measured cheaply (the shop mounts/settles
+  // async and its height changes on resize). A user drag switches to a persisted px position and stops
+  // the auto-dock (effect early-returns once `pos` is set).
+  const [shopTop, setShopTop] = useState<number | null>(null)
+  useEffect(() => {
+    if (pos) return
+    const measure = () => {
+      const r = document.querySelector(".game-shop")?.getBoundingClientRect()
+      if (r && r.height > 0) setShopTop(r.top) // ignore a hidden/zero-size shop; keep the last good value
+    }
+    measure()
+    window.addEventListener("resize", measure)
+    const id = setInterval(measure, 500)
+    return () => {
+      window.removeEventListener("resize", measure)
+      clearInterval(id)
+    }
+  }, [pos])
 
   const onHandleDown = (e: React.MouseEvent) => {
     e.preventDefault()
@@ -111,9 +132,15 @@ export default function ReplayControls({
   const span = Math.max(1, room.totalMs - base)
   const elapsed = Math.max(0, room.currentMs - base)
   const pct = Math.min(100, Math.max(0, (elapsed / span) * 100))
-  const posStyle = pos
+  // Dragged → absolute px. Otherwise dock above the shop (bottom-anchored, since the bar is
+  // position:fixed): the shop top sits `innerHeight - shopTop` px from the viewport bottom, so adding
+  // a gap places the bar just above it. Fall back to top-center until the shop has been measured.
+  const DOCK_GAP = 8
+  const posStyle: React.CSSProperties = pos
     ? { left: pos.x, top: pos.y }
-    : { left: "50%", top: 58, transform: "translateX(-50%)" }
+    : shopTop != null
+      ? { left: "50%", bottom: window.innerHeight - shopTop + DOCK_GAP, transform: "translateX(-50%)" }
+      : { left: "50%", top: 58, transform: "translateX(-50%)" }
 
   // Skip-button targets from the index. Navigate from the in-flight seek target while a seek is
   // rebuilding (navMs) so rapid skips / a held arrow key accumulate instead of recomputing the same
