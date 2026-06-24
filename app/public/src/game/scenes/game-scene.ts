@@ -88,6 +88,17 @@ export default class GameScene extends Scene {
     this.spectate = data.spectate
     this.uid = firebase.auth().currentUser?.uid
     this.started = false
+    // Phaser shuts the scene's display list, tweens and clock down on a restart, but not raw
+    // window.setTimeout handles. A replay seek restarts this same scene instance (game.tsx
+    // reattachReplayRoom → scene.start), so cancel any manager-owned timers on shutdown to keep a
+    // stale fuse from firing on the re-attached scene. `once` is consumed by each shutdown and
+    // re-registered by the next init, so it never stacks. No-op for a live game (one start, no restart).
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this)
+  }
+
+  shutdown() {
+    this.wandererManager?.dispose()
+    this.started = false
   }
 
   preload() {

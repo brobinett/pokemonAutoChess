@@ -45,6 +45,14 @@ export function getActiveGameRoom(): Room | null {
   return rooms.game ?? lastGameRoom
 }
 
+// Release the retained finished-game room (and, transitively, its in-memory capture buffers held via the
+// serializer WeakMap key). Called when the player returns to the lobby — past the after-game screen where
+// the download is offered, so the durable IndexedDB copy is what remains. Without this the last game's
+// frames linger in memory until a new game overwrites the ref (or forever while idling in lobby).
+export function resetActiveGameRoom() {
+  lastGameRoom = null
+}
+
 // The game build a recording was made in. TODO: source from a build-time constant once available.
 const GAME_BUILD = {
   version: "6.10.1",

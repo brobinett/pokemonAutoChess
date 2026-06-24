@@ -8,6 +8,7 @@ import type GameState from "../../../rooms/states/game-state"
 import { Transfer } from "../../../types"
 import { throttle } from "../../../utils/function"
 import { joinLobbyRoom } from "../game/lobby-logic"
+import { resetActiveGameRoom } from "../game/recorder"
 import { useAppDispatch, useAppSelector } from "../hooks"
 import { client, joinGame, leaveRoom, rooms } from "../network"
 import { resetBoosters } from "../stores/BoostersStore"
@@ -49,6 +50,13 @@ export default function Lobby() {
       lobbyJoined.current = true
     }
   }, [lobbyJoined])
+
+  // Back in the lobby (past the after-game download screen), release the recorder's strong ref to the
+  // finished game so its in-memory frames don't linger; the durable IndexedDB copy is unaffected.
+  // Idempotent, so StrictMode's double-mount is harmless.
+  useEffect(() => {
+    resetActiveGameRoom()
+  }, [])
 
   const signOut = useCallback(async () => {
     leaveRoom("lobby")

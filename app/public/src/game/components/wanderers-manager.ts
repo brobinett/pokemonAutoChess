@@ -30,12 +30,34 @@ List of wanderers:
 
 export default class WanderersManager {
   scene: GameScene
+  // window.setTimeout handles for the deferred wanderer sequences below (dialog auto-close, Xatu chest,
+  // Lapras exit). These fire seconds out and reach scene-global state (cameras.main fades, board.openChest);
+  // Phaser does NOT cancel raw setTimeouts when a scene shuts down, and a replay seek restarts this same
+  // GameScene instance — so an un-cancelled fuse would otherwise fire its effect on the re-attached scene.
+  // GameScene.shutdown() calls dispose() to cancel them. (Other managers' setTimeouts are sprite-local
+  // self-cleanup and idempotent, so they no-op against their already-destroyed sprites and need no teardown.)
+  private timers = new Set<ReturnType<typeof setTimeout>>()
 
   constructor(scene: GameScene) {
     this.scene = scene
     scene.board?.player.wanderers.forEach((wanderer) => {
       this.addWanderer(wanderer)
     })
+  }
+
+  /** Schedule `callback` after `ms`, tracking the handle so dispose() can cancel a still-pending fuse. */
+  private delay(callback: () => void, ms: number) {
+    const id = setTimeout(() => {
+      this.timers.delete(id)
+      callback()
+    }, ms)
+    this.timers.add(id)
+  }
+
+  /** Cancel every still-pending wanderer timer (called from GameScene.shutdown on a seek / scene teardown). */
+  dispose() {
+    this.timers.forEach((id) => clearTimeout(id))
+    this.timers.clear()
   }
 
   addWanderer(wanderer: Wanderer) {
@@ -136,7 +158,7 @@ export default class WanderersManager {
           sprite.closeDetail()
         } else {
           sprite.openDetail()
-          setTimeout(() => {
+          this.delay(() => {
             sprite.closeDetail()
           }, 3000)
         }
@@ -146,24 +168,24 @@ export default class WanderersManager {
 
     if (wanderer.pkm === Pkm.XATU && wanderer.data && this.scene.board) {
       const { chest, chestGroup } = this.scene.board.addChest(590, 450)
-      setTimeout(() => {
+      this.delay(() => {
         this.scene.board?.openChest(
           chestGroup,
           chest,
           wanderer.data.split(";") as Item[]
         )
       }, 5000)
-      setTimeout(() => {
+      this.delay(() => {
         chestGroup.destroy(true, true)
       }, 8000)
     }
 
     if (wanderer.pkm === Pkm.LAPRAS) {
-      setTimeout(() => {
+      this.delay(() => {
         sprite.moveManager.setSpeed(350)
         sprite.moveManager.moveTo(15 * 48, -100)
         this.scene.cameras.main.fadeOut(1000, 0, 0, 0)
-        setTimeout(() => {
+        this.delay(() => {
           this.scene.cameras.main.fadeIn(1000, 0, 0, 0)
           sprite.destroy()
         }, 1200)
