@@ -147,6 +147,21 @@ function bytesToB64(u8: Uint8Array): string {
   return btoa(s)
 }
 
+// Only the game room is ever downloaded, so don't buffer frames for the lobby/preparation/after rooms —
+// their continuous state patches + chat messages would otherwise pile up in memory while a player idles.
+// We EXCLUDE the known non-game rooms rather than INCLUDE only rooms.game: the game room's handshake +
+// initial state arrive during client.joinById, BEFORE joinGame sets rooms.game, so an inclusion test
+// (this === rooms.game) would drop them. The game room object/serializer is never one of lobby/prep/after
+// (distinct instances, even mid-join), so excluding those can NEVER drop a game frame.
+const isExcludedRoom = (room: object): boolean =>
+  room === rooms.lobby || room === rooms.preparation || room === rooms.after
+const serializerOf = (room: object | undefined) =>
+  (room as unknown as { serializer?: object } | undefined)?.serializer
+const isExcludedSerializer = (ser: object): boolean =>
+  ser === serializerOf(rooms.lobby) ||
+  ser === serializerOf(rooms.preparation) ||
+  ser === serializerOf(rooms.after)
+
 /** Install the inbound-stream taps. Idempotent; call once at app startup, before any game join. */
 export function installRecorder() {
   if (installed) return
@@ -167,13 +182,14 @@ export function installRecorder() {
       // (e.g. OOM under capture pressure) falls through to orig. The recorder sits in the live decode
       // hot path — this is the structural guard against the "additive code reaches into live" risk.
       try {
-        push(stateCaptures, this, {
-          t: Date.now(),
-          seq: seq++,
-          kind,
-          offset: it?.offset ?? defaultOffset,
-          bytes: bytes.slice() // copy: the SDK reuses the underlying buffer for later messages
-        })
+        if (!isExcludedSerializer(this))
+          push(stateCaptures, this, {
+            t: Date.now(),
+            seq: seq++,
+            kind,
+            offset: it?.offset ?? defaultOffset,
+            bytes: bytes.slice() // copy: the SDK reuses the underlying buffer for later messages
+          })
       } catch (e) {
         console.error("[recorder] capture failed (live decode unaffected)", e)
       }
@@ -194,13 +210,14 @@ export function installRecorder() {
   ) {
     try {
       if (rooms.game) lastGameRoom = rooms.game // retain the game room for the after-game download
-      push(msgCaptures, this, {
-        t: Date.now(),
-        seq: seq++,
-        kind: "message",
-        type,
-        payload: serializePayload(message)
-      })
+      if (!isExcludedRoom(this))
+        push(msgCaptures, this, {
+          t: Date.now(),
+          seq: seq++,
+          kind: "message",
+          type,
+          payload: serializePayload(message)
+        })
     } catch (e) {
       console.error(
         "[recorder] message capture failed (live dispatch unaffected)",
