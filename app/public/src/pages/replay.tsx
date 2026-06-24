@@ -90,6 +90,9 @@ export default function Replay() {
   const params = new URLSearchParams(window.location.search)
   const speed = Number(params.get("speed") ?? "1")
   const startMs = Number(params.get("startMs") ?? "0") // optional deep-link start offset
+  // Dev/test only: with ?debug, expose the ReplayRoom on window so the headless verify harnesses can read
+  // ms-precise playback state. Off by default, so the upstream build ships no global hook.
+  const debug = params.get("debug") != null
 
   // The real signed-in identity, captured on first render BEFORE the first boot overwrites Redux's
   // network.uid with the recording's POV uid (so the renderer treats the recorded player as "self").
@@ -159,9 +162,10 @@ export default function Replay() {
       focusMode: prev?.getFocusMode() ?? "off"
     })
     replayRoom.current = room
-    // Dev/test hook: lets the headless verify harness read playback state (currentMs, focus, paused) at
-    // ms precision, below the controls' mm:ss display. Harmless; remove before the upstream PR.
-    ;(window as unknown as { __replayRoom?: ReplayRoom }).__replayRoom = room
+    // Dev/test hook (?debug only): lets the headless verify harness read playback state (currentMs, focus,
+    // paused) at ms precision, below the controls' mm:ss display. Off in the shipped build.
+    if (debug)
+      (window as unknown as { __replayRoom?: ReplayRoom }).__replayRoom = room
     rooms.game = room as unknown as Room<GameState>
     // Pre-set the spectated player so the renderer's map/board callbacks target the right player.
     const self = room.state?.players?.get(manifest.viewerUid)
