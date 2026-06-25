@@ -11,15 +11,18 @@ import {
 import type { ReplayRoom } from "../../../game/replay-room"
 import "./replay-ui.css"
 
-// Overlay controls for the replay viewer: play/pause, scrub, speed, skip-by-phase/stage, a
-// phase-colored timeline with event markers, focus auto-speed (fast-forward prep or fights),
-// frame-step, and copy-link. Polls the ReplayRoom (which owns playback timing) a few times a second
+// Overlay controls for the replay viewer: play/pause, scrub, speed (0.5–8×), skip-by-phase/stage, a
+// phase-colored timeline with event markers, frame-step, and copy-link. Polls the ReplayRoom (which
+// owns playback timing) a few times a second
 // to reflect its state. Styled with the game's native classes (.my-container/.bubbly) so it reads as
 // part of the UI, and draggable (position persisted) so the viewer can move it off the shop.
 //
 // Skip buttons + markers + bands come from a derived transcript index (replay-index.ts); when it
 // isn't available (decode failure / older capture) the bar degrades to the plain scrubber.
 
+// Capped at 4×: higher multipliers can't be sustained (every Colyseus patch must be applied + rendered,
+// so playback is CPU/render-bound), and a speed button that silently throttles is worse than not offering
+// it. Matches replay.tsx's keyboard-cycle SPEEDS.
 const SPEEDS = [0.5, 1, 2, 4]
 const POS_KEY = "replay.controls.pos"
 
@@ -46,7 +49,9 @@ export default function ReplayControls({
   onRestart,
   onStepForward,
   onStepBackward,
-  onCopyLink
+  onCopyLink,
+  eventLogOpen,
+  onToggleEventLog
 }: {
   room: ReplayRoom
   index: ReplayIndex | null
@@ -56,6 +61,8 @@ export default function ReplayControls({
   onStepForward: () => void
   onStepBackward: () => void
   onCopyLink: () => Promise<boolean>
+  eventLogOpen: boolean
+  onToggleEventLog: () => void
 }) {
   const [, force] = useState(0)
   useEffect(() => {
@@ -157,7 +164,6 @@ export default function ReplayControls({
     : null
 
   const here = index ? segmentAt(index, room.currentMs) : null
-  const focus = room.getFocusMode()
   const paused = room.paused && !room.ended
 
   // Marker / band fraction along the re-based track [0,1].
@@ -320,15 +326,11 @@ export default function ReplayControls({
 
       <span className="rc-time">{fmt(span)}</span>
 
-      <div
-        className="rc-speeds"
-        title={focus !== "off" ? "Speed is set by fast-forward — turn FF off to choose it manually" : undefined}
-      >
+      <div className="rc-speeds">
         {SPEEDS.map((s) => (
           <button
             key={s}
-            className={`bubbly${focus === "off" && room.getSpeed() === s ? " blue" : ""}`}
-            disabled={focus !== "off"}
+            className={`bubbly${room.getSpeed() === s ? " blue" : ""}`}
             onClick={() => room.setSpeed(s)}
           >
             {s}×
@@ -336,19 +338,16 @@ export default function ReplayControls({
         ))}
       </div>
 
-      {/* Focus auto-speed: fast-forward one part of the match, watch the other at the chosen speed. */}
-      <div className="rc-focus" title="Fast-forward one part of the match, watch the rest">
-        <span className="rc-focus-label">FF</span>
-        <button className={`bubbly${focus === "prep" ? " blue" : ""}`} title="Fast-forward prep, watch the fights" onClick={() => room.setFocusMode("prep")}>
-          Prep
-        </button>
-        <button className={`bubbly${focus === "fights" ? " blue" : ""}`} title="Fast-forward fights, watch prep (where you actually decide)" onClick={() => room.setFocusMode("fights")}>
-          Fights
-        </button>
-      </div>
-
       <button className={`bubbly rc-copy${copied ? " green" : ""}`} title="Copy a link to this moment (c)" onClick={copy}>
         {copied ? "✓" : "🔗"}
+      </button>
+
+      <button
+        className={`bubbly rc-events${eventLogOpen ? " blue" : ""}`}
+        title="Toggle the event log (the frames this replay is built from)"
+        onClick={onToggleEventLog}
+      >
+        ☰ Events
       </button>
 
       <span className={`rc-label${room.ended ? " ended" : ""}`}>

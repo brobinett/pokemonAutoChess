@@ -18,6 +18,7 @@ import { rooms } from "../network"
 import { leaveGame, setPlayer } from "../stores/GameStore"
 import { logIn } from "../stores/NetworkStore"
 import ReplayControls from "./component/replay/replay-controls"
+import ReplayEventLog from "./component/replay/replay-event-log"
 import ReplayErrorBoundary from "./component/replay/replay-error-boundary"
 import "./component/replay/replay-readonly.css"
 import "./component/replay/replay-ui.css" // overlay/file-picker styles (needed before ReplayControls mounts)
@@ -71,6 +72,7 @@ export default function Replay() {
   const [gen, setGen] = useState(0) // keys the mounted <Game/>; bumps only on the initial mount (seeks re-attach in place)
   const [showGame, setShowGame] = useState(false) // <Game/> mounts once and stays mounted; seeks re-attach the scene
   const [seekEpoch, setSeekEpoch] = useState(0) // bumps per (re)boot to (re)run the wait-for-scene → startPlayback effect
+  const [eventLogOpen, setEventLogOpen] = useState(false) // owned here so its toggle can live in the control bar
   const initialized = useRef(false)
   const replayRoom = useRef<ReplayRoom | null>(null)
   const manifestRef = useRef<ReplayManifest | null>(null)
@@ -79,6 +81,11 @@ export default function Replay() {
   // The spectated board at the moment a seek begins. A re-attach restarts the scene, which builds a
   // brand-new BoardManager; we wait for `board !== prevBoard` so we don't latch onto the outgoing scene.
   const prevBoardRef = useRef<unknown>(null)
+  // The player the viewer is currently watching, carried across a seek so the new scene re-centres on
+  // the SAME board rather than snapping to whoever the recorded POV was looking at at the seek target
+  // (the POV's spectatedPlayerId, a synced field, drives the board otherwise). Defaults to the
+  // recording's POV player on the initial load; refreshed to the live view at the start of each seek.
+  const spectateTargetRef = useRef<string | null>(null)
   // While a seek is rebuilding the scene, room.currentMs is stale (the new room/scene isn't ready yet),
   // so phase/stage skips would all recompute the same jump from the frozen position — rapid clicks or a
   // held arrow key wouldn't accumulate. Track the in-flight seek target and navigate relative to it
@@ -158,18 +165,34 @@ export default function Replay() {
 
     const room = new ReplayRoom(manifest, {
       speed: prev?.getSpeed() ?? speed,
-      startMs: target,
-      focusMode: prev?.getFocusMode() ?? "off"
+      startMs: target
     })
     replayRoom.current = room
     // Dev/test hook (?debug only): lets the headless verify harness read playback state (currentMs, focus,
     // paused) at ms precision, below the controls' mm:ss display. Off in the shipped build.
-    if (debug)
+    if (debug) {
       (window as unknown as { __replayRoom?: ReplayRoom }).__replayRoom = room
+      // Live accessor for the Phaser scene, so headless harnesses can assert the renderer actually
+      // built sprites (board/combat/carousel) — the seek-heavy suites only ever exercised the
+      // re-attach path and missed an initial-load scene that silently built nothing.
+      ;(
+        window as unknown as { __gameScene?: () => unknown }
+      ).__gameScene = () => getGameContainer()?.gameScene
+    }
     rooms.game = room as unknown as Room<GameState>
+    // Who to watch after this (re)boot: keep the player the viewer is currently on across a seek
+    // (read the live GameContainer BEFORE the re-attach restarts its scene); default to the recording's
+    // POV player on the initial load.
+    spectateTargetRef.current = isSeek
+      ? getGameContainer()?.player?.id ??
+        spectateTargetRef.current ??
+        manifest.viewerUid
+      : manifest.viewerUid
     // Pre-set the spectated player so the renderer's map/board callbacks target the right player.
-    const self = room.state?.players?.get(manifest.viewerUid)
-    if (self) dispatch(setPlayer(self))
+    const watched =
+      room.state?.players?.get(spectateTargetRef.current) ??
+      room.state?.players?.get(manifest.viewerUid)
+    if (watched) dispatch(setPlayer(watched))
     // A recording that spanned a disconnect/reconnect has a 2nd handshake mid-stream; crossing it during
     // timed playback would swap the decoder and freeze the renderer. Re-attach across it via the seek
     // path (which rebuilds the decoder with no renderer attached, then re-binds) — the boundary frame's
@@ -363,6 +386,16 @@ export default function Replay() {
         gc.spectate = true
         if (gc.gameScene) gc.gameScene.spectate = true
       }
+      // Point the scene at the player the viewer should be watching (spectateTargetRef: the recording's
+      // POV on the initial load, or the board carried across a seek). startGame() builds off
+      // firebase.auth().currentUser (the real signed-in user, NOT the recorded POV) with spectate off,
+      // or players[0] with spectate on — neither is necessarily the right board, and when the signed-in
+      // uid isn't in the recording at all startGame builds nothing (black scene). setPlayer() here
+      // re-centres on the intended player (and, on a seek, re-loads its map — a brief tileset reload).
+      const watched = room.state?.players?.get(
+        spectateTargetRef.current ?? manifestRef.current?.viewerUid ?? ""
+      )
+      if (gc && watched) gc.setPlayer(watched)
       room.startPlayback()
       if (bootPausedRef.current) room.pause() // keep a paused scrub paused at the new time
       // A mid-fight seek boots with the battle simulation already populated, so the one-shot combat
@@ -463,6 +496,17 @@ export default function Replay() {
           onStepForward={stepForward}
           onStepBackward={stepBackward}
           onCopyLink={copyLink}
+          eventLogOpen={eventLogOpen}
+          onToggleEventLog={() => setEventLogOpen((o) => !o)}
+        />
+      )}
+      {replayRoom.current && (
+        <ReplayEventLog
+          room={replayRoom.current}
+          index={indexRef.current}
+          onSeek={seekTo}
+          open={eventLogOpen}
+          onClose={() => setEventLogOpen(false)}
         />
       )}
     </>

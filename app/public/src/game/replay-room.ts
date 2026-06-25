@@ -1,17 +1,6 @@
 import { SchemaSerializer, type Room } from "@colyseus/sdk"
 import type { Iterator } from "@colyseus/schema"
 import type GameState from "../../../rooms/states/game-state"
-import { GamePhaseState } from "../../../types/enum/Game"
-
-// "Focus" auto-speed: watch one part of the match and fast-forward the rest, by flexing the playback
-// cadence per phase (no reboot/seek — it just changes the frame interval). A focus mode *takes over*
-// speed: the watched part plays at 1× and the rest flies by at FAST_SPEED, so it's one self-contained
-// regime — the manual 1/2/4× buttons are disabled in the UI while a focus mode is active.
-//   "off"    — the manual 1/2/4× speed everywhere
-//   "prep"   — fast-forward PICK/TOWN, watch FIGHTs at 1× (the action)
-//   "fights" — fast-forward FIGHTs, watch PICK/TOWN at 1× (where the player actually decides)
-export type FocusMode = "off" | "prep" | "fights"
-const FAST_SPEED = 8 // multiplier used for the fast-forwarded phase
 
 // A ReplayRoom plays back a recorded match transcript through the EXISTING client renderer
 // without a live server. The client renders entirely from Colyseus decoder callbacks
@@ -69,8 +58,7 @@ export class ReplayRoom {
   private queue: ReplayFrame[] = []
   private idx = 0
   private timer: ReturnType<typeof setTimeout> | null = null
-  private baseSpeed: number // the user-chosen speed (0.5–4×); the "focus" mode may run faster per phase
-  private focusMode: FocusMode = "off"
+  private baseSpeed: number // the user-chosen speed (0.5–8×)
   private startMs: number
   private started = false
   private revealed = false
@@ -98,11 +86,10 @@ export class ReplayRoom {
 
   constructor(
     manifest: ReplayManifest,
-    opts: { speed?: number; startMs?: number; focusMode?: FocusMode } = {}
+    opts: { speed?: number; startMs?: number } = {}
   ) {
     this.manifest = manifest
     this.baseSpeed = opts.speed && opts.speed > 0 ? opts.speed : 1
-    this.focusMode = opts.focusMode ?? "off" // carried across seek reboots so the mode sticks
     this.startMs = opts.startMs && opts.startMs > 0 ? opts.startMs : 0
     this.totalMs = manifest.frames.length
       ? manifest.frames[manifest.frames.length - 1].t
@@ -131,11 +118,13 @@ export class ReplayRoom {
       }
     }
 
-    // For a seek (startMs > 0) advance the STATE to the target HERE, before the scene boots, so the
-    // scene boots already at the target: startGame() then builds the board/battle managers and reads the
-    // map from the state at T (like a fresh game / the carousel start). Fast-forwarding AFTER the scene
-    // attached instead leaves a stale map + sprites.
+    // Advance the STATE HERE, before the scene boots, so startGame() builds the board/battle managers and
+    // reads the map from the already-advanced state: a seek (startMs > 0) lands at its target; a fresh load
+    // (startMs === 0) lands on the opening carousel, with the pre-game loading wait skipped. Doing this
+    // before the renderer attaches keeps the burst of loading-wait/seek frames OFF the first-render path —
+    // the scene then draws the carousel/target in one triggerAll instead of lagging as the frames stream in.
     if (this.startMs > 0) this.fastForwardStateTo(this.startMs)
+    else this.skipLoadingPhase()
   }
 
   /** Constructor-time fast-forward for a seek: advance the decoder STATE to `ms` with no renderer
@@ -222,26 +211,25 @@ export class ReplayRoom {
     if (this.started) return
     this.started = true
     this.reveal()
-    // startMs (a seek target) was already fast-forwarded in the constructor, so the scene booted at the
-    // target. For a fresh load (startMs === 0) trim the pre-game loading wait so we open on the carousel.
-    if (this.startMs === 0) {
-      this.skipLoadingPhase()
-    } else if (this.preloadMapsPayload != null) {
-      // Scene is up now (startPlayback runs after the board exists). Replaying the captured PRELOAD_MAPS
-      // preloads the region tilemaps; its load-complete handler then swaps to the target's map.
+    // The pre-game loading wait (fresh load) / pre-target frames (seek) were already advanced in the
+    // constructor, with PRELOAD_MAPS stashed. Re-emit it now that the scene's onMessage handlers exist so
+    // the region tilemaps load (its load-complete handler then sets the current map); then play.
+    if (this.preloadMapsPayload != null) {
       this.emitMessage("PRELOAD_MAPS", this.preloadMapsPayload)
     }
     this.scheduleNext()
   }
 
-  /** Fast-apply frames (no delay) through the pre-game *loading wait* only, stopping the instant the
-   * match actually begins — the opening t0 portal carousel. That carousel is a TOWN-phase minigame at
-   * stageLevel 0 whose avatars/portals populate the moment the server runs startGame(); everything
-   * before it is just the loading screen (players' loadingProgress climbing to 100). We detect "game
-   * started" by the minigame being live (`avatars` present) rather than by stageLevel, because
-   * stageLevel only reaches 1 AFTER the ~23s carousel — gating on it skipped the carousel entirely and
-   * opened the replay on round 1 (round-2 play-test feedback). The stageLevel>=1 fallback guards a
-   * recording that somehow opens past the carousel, so we still never skip the whole match. */
+  /** Constructor-time skip through the pre-game *loading wait* to the opening t0 portal carousel, with no
+   * renderer attached (mirrors fastForwardStateTo for a seek): advancing here, BEFORE the scene boots,
+   * keeps the loading-wait frames off the carousel's first-render path so it doesn't lag on open. We stash
+   * PRELOAD_MAPS (re-emitted in startPlayback once the scene's onMessage handlers exist) and drop the other
+   * transient loading messages. We stop the instant the match begins — the carousel, a TOWN-phase minigame
+   * at stageLevel 0 whose avatars populate the moment the server runs startGame(); everything before it is
+   * just the loading screen. We detect that by the minigame being live (`avatars` present) rather than
+   * stageLevel, which only reaches 1 AFTER the ~23s carousel — gating on it skipped the carousel entirely
+   * (round-2 play-test feedback). The stageLevel>=1 fallback guards a recording that opens past the
+   * carousel, so we still never skip the whole match. */
   private skipLoadingPhase() {
     let guard = 0
     const gameStarted = () =>
@@ -251,7 +239,15 @@ export class ReplayRoom {
       !gameStarted() &&
       guard++ < this.queue.length
     ) {
-      if (!this.applyNext()) break
+      const f = this.queue[this.idx]
+      if (f.kind === "message") {
+        if (f.type === "PRELOAD_MAPS")
+          this.preloadMapsPayload = this.decodePayload(f.payload)
+      } else {
+        this.applyFrame(f)
+      }
+      this.currentMs = f.t
+      this.idx++
     }
   }
 
@@ -284,7 +280,7 @@ export class ReplayRoom {
       this.rebindHandlers.forEach((h) => h(this.rebindTargetAt()))
       return
     }
-    const dt = Math.max(0, (next.t - this.currentMs) / this.effectiveSpeed())
+    const dt = Math.max(0, (next.t - this.currentMs) / this.baseSpeed)
     this.timer = setTimeout(() => {
       if (this.paused || this.ended) return
       if (!this.applyNext()) this.finish()
@@ -328,28 +324,6 @@ export class ReplayRoom {
 
   getSpeed() {
     return this.baseSpeed
-  }
-
-  /** The cadence the next interval should play at: the chosen speed, or FAST_SPEED for the phase the
-   * current focus mode fast-forwards (read off the live state.phase). */
-  private effectiveSpeed(): number {
-    if (this.focusMode === "off") return this.baseSpeed
-    // Focus mode takes over: watch one phase at 1×, fast-forward the rest at FAST_SPEED — fixed, so it
-    // never compounds with the manual 1/2/4× (which is why the UI disables those buttons while it's on).
-    const isFight = this.state?.phase === GamePhaseState.FIGHT
-    const watchingNow = this.focusMode === "prep" ? isFight : !isFight
-    return watchingNow ? 1 : FAST_SPEED
-  }
-
-  /** Set the focus auto-speed mode; selecting the active one again turns it off. Reschedules so the
-   * new cadence takes effect immediately. */
-  setFocusMode(mode: FocusMode) {
-    this.focusMode = this.focusMode === mode ? "off" : mode
-    if (!this.paused && !this.ended) this.scheduleNext()
-  }
-
-  getFocusMode(): FocusMode {
-    return this.focusMode
   }
 
   /** Frame-step forward one visible update while paused: apply frames until one state/patch lands

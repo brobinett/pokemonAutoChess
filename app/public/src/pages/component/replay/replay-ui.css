@@ -203,33 +203,11 @@
   display: flex;
   gap: 0.25em;
 }
-/* dimmed while a focus (fast-forward) mode owns the speed — FF takes over, manual speed is off */
-.replay-controls .rc-speeds .bubbly:disabled {
-  opacity: 0.35;
-  cursor: default;
-  box-shadow: var(--shadow-clickable);
-}
 
 /* frame-step cluster (shown when paused) */
 .replay-controls .rc-step {
   display: flex;
   gap: 0.25em;
-}
-
-/* focus auto-speed (fast-forward prep / fights) */
-.replay-controls .rc-focus {
-  display: flex;
-  align-items: center;
-  gap: 0.25em;
-}
-.replay-controls .rc-focus-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  color: var(--color-fg-secondary);
-}
-.replay-controls .rc-focus .bubbly {
-  min-width: unset;
 }
 
 /* copy-link button; flashes green ✓ on success */

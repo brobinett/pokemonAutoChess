@@ -439,6 +439,15 @@ export default function Game() {
       initialized.current = true
 
       gameContainer = new GameContainer(container.current, uid, room)
+      // A replay is always a spectate session. The GameScene keys "self" off
+      // firebase.auth().currentUser (the real signed-in user), which for a replay is NOT the recorded
+      // POV uid — so the spectate=false startGame would look up a player absent from the recording,
+      // throw at setMap(undefined.map), and build no board/minigame/battle (black scene, no sprites).
+      // Spectating from the first scene start makes startGame build from players[0] (then the POV's
+      // spectatedPlayerId re-points to the recorded player), exactly as the seek/re-attach path does.
+      // Detected via the ReplayRoom's fixed roomId so live games are untouched.
+      if ((room as { roomId?: string }).roomId === "replay")
+        gameContainer.spectate = true
 
       const gameElm = document.getElementById("game")
       gameElm?.addEventListener(Transfer.DRAG_DROP, ((
@@ -899,7 +908,15 @@ export default function Game() {
             if (room?.state?.players) {
               const spectatedPlayer =
                 room?.state?.players.get(spectatedPlayerId)
-              if (spectatedPlayer && player.id === uid) {
+              // In a replay the recorded POV's spectatedPlayerId must NOT hijack the viewer's camera:
+              // the viewer drives their own view (default POV + manual click, sticky across seeks), and
+              // their pick is never yanked by what the recorded player happened to be scouting. Fights
+              // still follow whoever is being watched via initializeSimulation (simulations.onAdd keys
+              // on `this.player`). Live games keep following so a spectator tracks their own selection.
+              // (A future "lock to player X's POV" mode would opt back into following the recorded view.)
+              const isReplay =
+                (room as { roomId?: string }).roomId === "replay"
+              if (spectatedPlayer && player.id === uid && !isReplay) {
                 gameContainer.setPlayer(spectatedPlayer)
 
                 const simulation = room.state.simulations.get(
