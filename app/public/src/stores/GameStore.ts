@@ -113,7 +113,27 @@ export const gameSlice: Slice<GameStateStore> = createSlice({
       state.specialGameRule = action.payload
     },
     addPlayer: (state, action: PayloadAction<IPlayer>) => {
-      state.players.push(JSON.parse(JSON.stringify(action.payload)))
+      // Idempotent by player id. Live fires players.onAdd exactly once per id, so this is the same
+      // `push` as before. The replay viewer re-runs the player bindings on every seek (re-attach
+      // rebinds onAdd → triggerAll on the fresh decoder), which previously pushed a DUPLICATE of
+      // every player each seek — state.game.players grew 8→16→32… and selectConnectedPlayer's
+      // `.find(by id)` then returned the OLDEST, frozen copy (stale shop/choices/etc.). Replacing the
+      // existing entry keeps one copy per id and refreshes it from the seek-target decoder state.
+      const clone = JSON.parse(JSON.stringify(action.payload)) as IPlayer
+      // JSON-cloning collapses the Synergies MapSchema into a plain object ({GRASS:2,…}) with no
+      // .entries()/Map methods. Re-upgrade it to a real Synergies — exactly as setSynergies does — so
+      // GamePlayerDetail's `[...player.synergies.entries()]` works on hover BEFORE the first synergy
+      // change re-dispatches setSynergies. Live only hid this because synergies change within a round;
+      // in a replay sitting on the idle carousel no change fires, so the plain-object clone is hovered.
+      clone.synergies = new Synergies(
+        new Map(Object.entries(clone.synergies ?? {}) as [Synergy, number][])
+      )
+      const index = state.players.findIndex((p) => p.id === clone.id)
+      if (index >= 0) {
+        state.players[index] = clone
+      } else {
+        state.players.push(clone)
+      }
     },
     removePlayer: (state, action: PayloadAction<IPlayer>) => {
       state.players = state.players.filter((p) => p.id !== action.payload.id)
