@@ -344,10 +344,10 @@ export default function ReplayControls({
 
       <button
         className={`bubbly rc-events${eventLogOpen ? " blue" : ""}`}
-        title="Toggle the event log (the frames this replay is built from)"
+        title="Event log — the frames this replay is built from"
         onClick={onToggleEventLog}
       >
-        ☰ Events
+        ☰
       </button>
 
       <span className={`rc-label${room.ended ? " ended" : ""}`}>
