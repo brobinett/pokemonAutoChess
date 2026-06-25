@@ -88,6 +88,15 @@ const DEFAULT_ON: Record<Category, boolean> = {
   engine: false // high-frequency board/sim plumbing — opt-in
 }
 
+// Derived POV-action types (from replay-index) → category. Defaults to economy (shop/board management);
+// synergy-driven bench gains and proposition picks are routed explicitly.
+const ACTION_CAT: Record<string, Category> = {
+  pick: "flow",
+  egg: "synergy",
+  fish: "synergy",
+  hatch: "synergy"
+}
+
 const FILTER_KEY = "replay.eventlog.filters"
 const BOX_KEY = "replay.eventlog.box" // { x, y, w, h }
 
@@ -140,9 +149,9 @@ function summarize(type: string, payload: unknown, names?: { caster?: string; ta
       case "PRELOAD_MAPS": return Array.isArray(payload) ? `${payload.length} region maps` : ""
       case "LOADING_COMPLETE": return "game start"
       case "GAME_END": return "game over"
-      case "COOK": return "dish cooked"
-      case "DIG": return "treasure dug"
-      case "NPC_DIALOG": return String((p as { dialog?: string })?.dialog ?? "dialog")
+      case "COOK": { const o = p as { dishes?: string[] }; return Array.isArray(o?.dishes) && o.dishes.length ? `cooked ${o.dishes.map(prettyName).join(", ")}` : "cooked a dish" }
+      case "DIG": { const o = p as { buriedItem?: string | null }; return o?.buriedItem ? `dug up ${prettyName(o.buriedItem)}` : "dug — nothing" }
+      case "NPC_DIALOG": { const o = p as { npc?: string; dialog?: string }; return `${prettyName(o?.npc)}: ${o?.dialog ?? ""}`.trim() }
       case "SHOW_EMOTE": return "emote"
       default: return ""
     }
@@ -275,8 +284,9 @@ export default function ReplayEventLog({
     })
     index?.segments.forEach((s) => out.push({ t: s.t, frame: -1, type: "PHASE", summary: `Stage ${s.stage} · ${s.phaseLabel}`, cat: "flow", kind: "phase" }))
     index?.events.filter((e) => e.type === "elimination").forEach((e) => out.push({ t: e.t, frame: -1, type: "ELIMINATION", summary: e.label, cat: "flow", kind: "elim" }))
-    // POV-player actions: reroll/buy/sell/level → Economy; proposition pick → Match flow.
-    index?.actions.forEach((a) => out.push({ t: a.t, frame: -1, type: a.type.toUpperCase(), summary: a.label, cat: a.type === "pick" ? "flow" : "economy", kind: a.type === "pick" ? "pick" : "action" }))
+    // POV-player actions → categories: shop/board management to Economy, synergy-driven gains (egg/fish/
+    // hatch) to Synergy, proposition picks to Match flow.
+    index?.actions.forEach((a) => out.push({ t: a.t, frame: -1, type: a.type.toUpperCase(), summary: a.label, cat: ACTION_CAT[a.type] ?? "economy", kind: a.type === "pick" ? "pick" : "action" }))
     return out.sort((a, b) => a.t - b.t || a.frame - b.frame)
   }, [room, index])
 

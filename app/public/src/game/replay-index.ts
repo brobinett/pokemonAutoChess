@@ -2,7 +2,7 @@ import { SchemaSerializer } from "@colyseus/sdk"
 import type { Iterator } from "@colyseus/schema"
 import type GameState from "../../../rooms/states/game-state"
 import { getPokemonData } from "../../../models/precomputed/precomputed-pokemon-data"
-import { GamePhaseState } from "../../../types/enum/Game"
+import { GamePhaseState, PokemonActionState } from "../../../types/enum/Game"
 import { Pkm } from "../../../types/enum/Pokemon"
 import type { ReplayFrame } from "./replay-room"
 
@@ -48,6 +48,10 @@ export type ReplayEventType =
   | "remove" // cleared a shop slot via "e" (REMOVE_FROM_SHOP) — distinct from a buy
   | "sell"
   | "evolve"
+  | "hatch" // an egg hatched into a pokemon
+  | "egg" // Baby synergy laid an egg
+  | "fish" // Water synergy fished a pokemon onto the bench
+  | "gained" // a unit appeared on the bench from some other effect (wanderer catch, reward…)
   | "level"
   | "pick"
 
@@ -243,24 +247,29 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         // base(s) removed + evolved added. Verifying the relationship (vs labelling any remove+add an
         // evolve) rejects a coincidental same-frame sell+buy.
         if (added.length && removed.length) {
-          let pair: [string, string] | undefined
-          for (const [, ev] of added) {
-            const base = removed.find(([, b]) => evolvesTo(b, ev))?.[1]
-            if (base) {
-              pair = [base, ev]
-              break
+          if (removed.some(([, n]) => n === Pkm.EGG)) {
+            // an egg was consumed and a pokemon appeared → it hatched
+            actions.push({ t: f.t, type: "hatch", label: `Egg → ${prettyName(added[0][1])}` })
+          } else {
+            let pair: [string, string] | undefined
+            for (const [, ev] of added) {
+              const base = removed.find(([, b]) => evolvesTo(b, ev))?.[1]
+              if (base) {
+                pair = [base, ev]
+                break
+              }
             }
+            // Fallback for divergent / runtime-computed evolutions the static table doesn't map: 2+ copies
+            // of the SAME species consumed for one new unit is unambiguously a combine (a multi-sell has no
+            // added unit, so this can't be one).
+            if (!pair && added.length === 1) {
+              const counts = new Map<string, number>()
+              for (const [, b] of removed) counts.set(b, (counts.get(b) ?? 0) + 1)
+              const combinedBase = [...counts].find(([, n]) => n >= 2)?.[0]
+              if (combinedBase) pair = [combinedBase, added[0][1]]
+            }
+            if (pair) actions.push({ t: f.t, type: "evolve", label: `${prettyName(pair[0])} → ${prettyName(pair[1])}` })
           }
-          // Fallback for divergent / runtime-computed evolutions the static table doesn't map: 2+ copies
-          // of the SAME species consumed for one new unit is unambiguously a combine (a multi-sell has no
-          // added unit, so this can't be one).
-          if (!pair && added.length === 1) {
-            const counts = new Map<string, number>()
-            for (const [, b] of removed) counts.set(b, (counts.get(b) ?? 0) + 1)
-            const combinedBase = [...counts].find(([, n]) => n >= 2)?.[0]
-            if (combinedBase) pair = [combinedBase, added[0][1]]
-          }
-          if (pair) actions.push({ t: f.t, type: "evolve", label: `${prettyName(pair[0])} → ${prettyName(pair[1])}` })
         }
 
         // Priority so one underlying SHOP action emits one event.
@@ -279,6 +288,18 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           actions.push({ t: f.t, type: "sell", label: `${prettyName(removed[0][1])}${dMoney > 0 ? ` (+${dMoney})` : ""}` })
         } else if (!boardChanged && refreshed >= REROLL_MIN_REFRESHED_SLOTS) {
           actions.push({ t: f.t, type: "reroll", label: dMoney < 0 ? `${dMoney} gold` : "free roll" })
+        } else if (added.length && !removed.length) {
+          // A unit appeared on the bench with no buy/pick/evolution behind it: Baby synergy egg, Water
+          // synergy fish (spawnOnBench sets action=FISH), or some other free gain (wanderer catch, reward).
+          for (const [id, name] of added) {
+            if (name === Pkm.EGG) {
+              actions.push({ t: f.t, type: "egg", label: "Egg laid" })
+            } else if (pov.board.get(id)?.action === PokemonActionState.FISH) {
+              actions.push({ t: f.t, type: "fish", label: `Fished ${prettyName(name)}` })
+            } else {
+              actions.push({ t: f.t, type: "gained", label: `Gained ${prettyName(name)}` })
+            }
+          }
         }
         if (typeof level === "number" && typeof povLevel === "number" && level > povLevel) {
           actions.push({ t: f.t, type: "level", label: `→ ${level}` })
