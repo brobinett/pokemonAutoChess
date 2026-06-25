@@ -1,6 +1,7 @@
 import { SchemaSerializer } from "@colyseus/sdk"
 import type { Iterator } from "@colyseus/schema"
 import type GameState from "../../../rooms/states/game-state"
+import { getPokemonData } from "../../../models/precomputed/precomputed-pokemon-data"
 import { GamePhaseState } from "../../../types/enum/Game"
 import { Pkm } from "../../../types/enum/Pokemon"
 import type { ReplayFrame } from "./replay-room"
@@ -46,8 +47,16 @@ export type ReplayEventType =
   | "buy"
   | "remove" // cleared a shop slot via "e" (REMOVE_FROM_SHOP) — distinct from a buy
   | "sell"
+  | "evolve"
   | "level"
   | "pick"
+
+// Is `evolved` a (possibly divergent) evolution of `base`? Used to confirm a board churn is really an
+// evolution — and to label it — rather than a coincidental same-frame remove+add.
+function evolvesTo(base: string, evolved: string): boolean {
+  const d = getPokemonData(base as Pkm)
+  return d?.evolution === evolved || (d?.evolutions?.includes(evolved as Pkm) ?? false)
+}
 export interface ReplayEvent {
   t: number // absolute ms
   type: ReplayEventType
@@ -227,7 +236,34 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         // whole shop) from reading as a roll.
         const refreshed = shop.filter((s, k) => s !== povShop![k] && s !== Pkm.DEFAULT).length
 
-        // Priority so one underlying action emits one event.
+        // Evolution: a board churn where an added unit is the evolution of a removed one. Detected
+        // independently of the shop branch below — a 3-combine on BUY emits both a buy and an evolve.
+        // The evolution handlers delete the consumed copies and set one new evolved entity (count =
+        // 3-combine, plus item/hatch/money/placement/stack/state single-step evolves), so the diff is
+        // base(s) removed + evolved added. Verifying the relationship (vs labelling any remove+add an
+        // evolve) rejects a coincidental same-frame sell+buy.
+        if (added.length && removed.length) {
+          let pair: [string, string] | undefined
+          for (const [, ev] of added) {
+            const base = removed.find(([, b]) => evolvesTo(b, ev))?.[1]
+            if (base) {
+              pair = [base, ev]
+              break
+            }
+          }
+          // Fallback for divergent / runtime-computed evolutions the static table doesn't map: 2+ copies
+          // of the SAME species consumed for one new unit is unambiguously a combine (a multi-sell has no
+          // added unit, so this can't be one).
+          if (!pair && added.length === 1) {
+            const counts = new Map<string, number>()
+            for (const [, b] of removed) counts.set(b, (counts.get(b) ?? 0) + 1)
+            const combinedBase = [...counts].find(([, n]) => n >= 2)?.[0]
+            if (combinedBase) pair = [combinedBase, added[0][1]]
+          }
+          if (pair) actions.push({ t: f.t, type: "evolve", label: `${prettyName(pair[0])} → ${prettyName(pair[1])}` })
+        }
+
+        // Priority so one underlying SHOP action emits one event.
         if (emptied.length) {
           const kind = boardChanged ? "buy" : "remove"
           emptied.forEach((name) =>
@@ -235,9 +271,12 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           )
         } else if (choiceResolved && added.length) {
           actions.push({ t: f.t, type: "pick", label: `Picked ${prettyName(added[0][1])}` })
-        } else if (removed.length && !added.length && dMoney > 0) {
-          // Sell. Gold-gated, so FREE_MARKET's 0-gold sells are missed — a documented special-mode gap.
-          actions.push({ t: f.t, type: "sell", label: `${prettyName(removed[0][1])} (+${dMoney})` })
+        } else if (removed.length && !added.length && removed.length <= 3 && pov.alive !== false) {
+          // Sell — structural (a board unit leaves with no add and no shop-slot buy), so it's
+          // mode-independent (catches FREE_MARKET 0-gold sells). Eliminations don't clear the board
+          // (units are released to the pool but kept), so this can't fire on cleanup; the ≤3 cap and
+          // alive guard are belt-and-suspenders. Gold shown only when it changed.
+          actions.push({ t: f.t, type: "sell", label: `${prettyName(removed[0][1])}${dMoney > 0 ? ` (+${dMoney})` : ""}` })
         } else if (!boardChanged && refreshed >= REROLL_MIN_REFRESHED_SLOTS) {
           actions.push({ t: f.t, type: "reroll", label: dMoney < 0 ? `${dMoney} gold` : "free roll" })
         }
