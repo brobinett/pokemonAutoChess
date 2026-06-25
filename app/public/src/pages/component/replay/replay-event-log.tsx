@@ -5,12 +5,12 @@ import type { ReplayRoom } from "../../../game/replay-room"
 import "./replay-event-log.css"
 
 // Combat-event naming, grounded in the actual payloads:
-//   ABILITY        → { id: simulationId, skill, positionX/Y (caster tile), targetX/Y } — no species in
-//                    the payload, so we show the skill + the caster's tile. Naming the caster unit would
-//                    need resolving the tile against the positional board state (a follow-up).
+//   ABILITY        → { id: simulationId, skill, positionX/Y (caster tile), targetX/Y (target tile) }
 //   POKEMON_DAMAGE → { index: ATTACKER species, amount, type (AttackType), x/y: victim tile }
 //   POKEMON_HEAL   → { index: HEALER  species, amount, type (HealType),  x/y: target tile }
-// So damage/heal name the SOURCE for free (index → PkmByIndex); the target is a tile in every case.
+// Damage/heal name the SOURCE from the species `index` (→ PkmByIndex). Every payload identifies the
+// OTHER units only by tile, so the index resolves those tiles against the simulation positions (passed
+// in as `names`): the ABILITY caster + target, and the damage/heal target.
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 // Default dock: right edge ~6vw from the screen edge (aligned under the DPS meter, which clears the
@@ -110,24 +110,28 @@ const DMG_TYPE = ["physical", "special", "true"]
 
 // Best-effort one-line summary of a ROOM_DATA payload. Kept defensive (payloads vary by type/version);
 // unknown shapes just show the type. Copy is intentionally terse — Blake owns the wording pass.
-function summarize(type: string, payload: unknown): string {
+function summarize(type: string, payload: unknown, names?: { caster?: string; target?: string }): string {
   const p = payload as Record<string, unknown> | number | null
   try {
     switch (type) {
       case "ABILITY": {
         const o = p as { skill?: string; positionX?: number; positionY?: number }
         const skill = prettyName(o?.skill)
-        return o?.positionX != null ? `${skill} @(${o.positionX},${o.positionY})` : skill
+        const head = names?.caster ? `${prettyName(names.caster)} · ${skill}` : skill
+        if (names?.target) return `${head} → ${prettyName(names.target)}`
+        return names?.caster || o?.positionX == null ? head : `${head} @(${o.positionX},${o.positionY})`
       }
       case "POKEMON_DAMAGE": {
         const o = p as { index?: string; amount?: number; type?: number; x?: number; y?: number }
         const src = o?.index ? PkmByIndex[o.index] : undefined
-        return `${src ? prettyName(src) : "?"} ${o?.amount ?? "?"} ${DMG_TYPE[o?.type ?? 0] ?? ""} →(${o?.x},${o?.y})`
+        const tgt = names?.target ? prettyName(names.target) : `(${o?.x},${o?.y})`
+        return `${src ? prettyName(src) : "?"} ${o?.amount ?? "?"} ${DMG_TYPE[o?.type ?? 0] ?? ""} → ${tgt}`
       }
       case "POKEMON_HEAL": {
         const o = p as { index?: string; amount?: number; type?: number; x?: number; y?: number }
         const src = o?.index ? PkmByIndex[o.index] : undefined
-        return `${src ? prettyName(src) : "?"} +${o?.amount ?? "?"}${o?.type === 0 ? " shield" : ""} →(${o?.x},${o?.y})`
+        const tgt = names?.target ? prettyName(names.target) : `(${o?.x},${o?.y})`
+        return `${src ? prettyName(src) : "?"} +${o?.amount ?? "?"}${o?.type === 0 ? " shield" : ""} → ${tgt}`
       }
       case "DISPLAY_TEXT": { const o = p as { text?: string }; return String(o?.text ?? "") }
       case "PLAYER_DAMAGE": return `${typeof p === "number" ? p : (p as { value?: number })?.value ?? "?"} life lost`
@@ -266,7 +270,7 @@ export default function ReplayEventLog({
     room.manifest.frames.forEach((f, i) => {
       if (f.kind === "message") {
         const type = String(f.type)
-        out.push({ t: f.t, frame: i, type, summary: summarize(type, f.payload), cat: CATEGORY_OF[type] ?? "engine", kind: "msg" })
+        out.push({ t: f.t, frame: i, type, summary: summarize(type, f.payload, index?.combatUnits?.[i]), cat: CATEGORY_OF[type] ?? "engine", kind: "msg" })
       }
     })
     index?.segments.forEach((s) => out.push({ t: s.t, frame: -1, type: "PHASE", summary: `Stage ${s.stage} · ${s.phaseLabel}`, cat: "flow", kind: "phase" }))

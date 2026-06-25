@@ -2,6 +2,7 @@ import { SchemaSerializer } from "@colyseus/sdk"
 import type { Iterator } from "@colyseus/schema"
 import type GameState from "../../../rooms/states/game-state"
 import { GamePhaseState } from "../../../types/enum/Game"
+import { Pkm } from "../../../types/enum/Pokemon"
 import type { ReplayFrame } from "./replay-room"
 
 // A compact index of where the interesting moments are in a recording: every phase-within-stage
@@ -62,6 +63,10 @@ export interface ReplayIndex {
   // POV-player actions (reroll/buy/sell/level/proposition pick), sorted by t. Kept separate from
   // `events` so they feed the event log WITHOUT flooding the scrubber with a marker per reroll/buy.
   actions: ReplayEvent[]
+  // Combat-event unit names resolved by tile, keyed by the message frame's index in manifest.frames.
+  // The ABILITY / POKEMON_DAMAGE / POKEMON_HEAL payloads identify units by (simulationId, x, y), not
+  // by id, so we look the tile up against the simulation positions decoded as of that frame.
+  combatUnits: Record<number, { caster?: string; target?: string }>
 }
 
 // PAC enum values are SCREAMING_SNAKE (Pkm.SWINUB = "SWINUB", Ability.ICE_SPINNER); render them as
@@ -84,9 +89,30 @@ export function isElimination(prevLife: number | undefined, life: number): boole
   return typeof prevLife === "number" && prevLife > 0 && life <= 0
 }
 
-// How many shop slots must differ between frames to read as a reroll (a refresh replaces the whole
-// shop; a single buy empties one slot). 3+ changed slots is unambiguously a refresh, not a buy.
-const REROLL_MIN_CHANGED_SLOTS = 3
+// How many shop slots must be replaced with new (non-empty) values to read as a reroll. A single buy
+// empties exactly one slot (→ DEFAULT) and replaces none, so 3+ refreshed slots is unambiguously a roll.
+const REROLL_MIN_REFRESHED_SLOTS = 3
+
+// The unit occupying a tile in a simulation, as of the currently-decoded state. Combat messages key
+// units by (simulationId, x, y), so this is how we name a damage target or an ability's caster/target.
+function unitAt(
+  state: GameState,
+  simId: string | undefined,
+  x: number | undefined,
+  y: number | undefined
+): string | undefined {
+  if (!simId || x == null || y == null) return undefined
+  const sim = state.simulations?.get(simId)
+  if (!sim) return undefined
+  let name: string | undefined
+  const scan = (team: { forEach?: (cb: (e: { positionX?: number; positionY?: number; name?: string }) => void) => void } | undefined) =>
+    team?.forEach?.((e) => {
+      if (e?.positionX === x && e?.positionY === y) name = e.name
+    })
+  scan((sim as { blueTeam?: unknown }).blueTeam as never)
+  scan((sim as { redTeam?: unknown }).redTeam as never)
+  return name
+}
 
 export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): ReplayIndex {
   const ser = new SchemaSerializer<GameState>()
@@ -97,6 +123,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   const segments: ReplaySegment[] = []
   const events: ReplayEvent[] = [] // eliminations only (scrubber markers + log)
   const actions: ReplayEvent[] = [] // POV reroll/buy/sell/level/pick (log only)
+  const combatUnits: Record<number, { caster?: string; target?: string }> = {}
 
   let prevPhase: number | undefined
   let prevStage: number | undefined
@@ -110,11 +137,28 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   let povBoard: Map<string, string> | undefined // unit id → name
   let povChoices: Set<string> | undefined // choice ids currently offered
 
-  for (const f of frames) {
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i]
     durationMs = Math.max(durationMs, f.t)
 
     if (f.kind === "message") {
       if (f.type === "LOADING_COMPLETE" && gameStartMs === null) gameStartMs = f.t
+      // Resolve combat-event units by tile against the state decoded so far (ABILITY caster + target;
+      // damage/heal target — their SOURCE comes from the message's own species `index`).
+      if (hasState && (f.type === "ABILITY" || f.type === "POKEMON_DAMAGE" || f.type === "POKEMON_HEAL")) {
+        const state = ser.getState()
+        const pl = f.payload as {
+          id?: string; positionX?: number; positionY?: number; targetX?: number; targetY?: number; x?: number; y?: number
+        }
+        if (f.type === "ABILITY") {
+          const caster = unitAt(state, pl?.id, pl?.positionX, pl?.positionY)
+          const target = unitAt(state, pl?.id, pl?.targetX, pl?.targetY)
+          if (caster || target) combatUnits[i] = { caster, target }
+        } else {
+          const target = unitAt(state, pl?.id, pl?.x, pl?.y)
+          if (target) combatUnits[i] = { target }
+        }
+      }
       continue
     }
 
@@ -166,19 +210,26 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         const added = [...board].filter(([id]) => !povBoard!.has(id))
         const removed = [...povBoard].filter(([id]) => !board.has(id))
         const choiceResolved = !!povChoices && [...povChoices].some((id) => !choices.has(id))
-        const changedSlots = shop.filter((s, i) => s !== povShop![i]).length +
-          Math.abs(shop.length - povShop.length)
-        // a bought unit leaves the shop: its name was offered last frame and is gone now
-        const boughtName = added.find(([, name]) => povShop!.includes(name) && !shop.includes(name))?.[1]
+        // A buy sets the bought slot to Pkm.DEFAULT (game-commands SHOP handler). Reading the slot
+        // emptying — rather than the bought unit landing on the board — catches buys even when the
+        // species is still duplicated elsewhere in the shop, or the buy auto-combines into an evolution.
+        const bought: string[] = []
+        for (let s = 0; s < povShop.length && s < shop.length; s++) {
+          if (povShop[s] !== Pkm.DEFAULT && shop[s] === Pkm.DEFAULT) bought.push(povShop[s])
+        }
+        // A reroll replaces slots with new non-empty values (a buy replaces none → 0 refreshed).
+        const refreshed = shop.filter((s, k) => s !== povShop![k] && s !== Pkm.DEFAULT).length
 
-        // Priority order so one underlying action emits one event.
-        if (choiceResolved && added.length) {
+        // Priority so one underlying action emits one event.
+        if (bought.length) {
+          bought.forEach((name) =>
+            actions.push({ t: f.t, type: "buy", label: `${prettyName(name)}${bought.length === 1 && dMoney < 0 ? ` (${dMoney})` : ""}` })
+          )
+        } else if (choiceResolved && added.length) {
           actions.push({ t: f.t, type: "pick", label: `Picked ${prettyName(added[0][1])}` })
-        } else if (boughtName) {
-          actions.push({ t: f.t, type: "buy", label: `${prettyName(boughtName)}${dMoney < 0 ? ` (${dMoney})` : ""}` })
         } else if (removed.length && !added.length && dMoney > 0) {
           actions.push({ t: f.t, type: "sell", label: `${prettyName(removed[0][1])} (+${dMoney})` })
-        } else if (changedSlots >= REROLL_MIN_CHANGED_SLOTS) {
+        } else if (refreshed >= REROLL_MIN_REFRESHED_SLOTS) {
           actions.push({ t: f.t, type: "reroll", label: dMoney < 0 ? `${dMoney} gold` : "free roll" })
         }
         if (typeof level === "number" && typeof povLevel === "number" && level > povLevel) {
@@ -221,7 +272,8 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     segments: indexedSegments,
     stages,
     events: events.sort((a, b) => a.t - b.t),
-    actions: actions.sort((a, b) => a.t - b.t)
+    actions: actions.sort((a, b) => a.t - b.t),
+    combatUnits
   }
 }
 
