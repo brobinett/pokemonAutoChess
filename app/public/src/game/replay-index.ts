@@ -44,6 +44,7 @@ export type ReplayEventType =
   | "elimination"
   | "reroll"
   | "buy"
+  | "remove" // cleared a shop slot via "e" (REMOVE_FROM_SHOP) — distinct from a buy
   | "sell"
   | "level"
   | "pick"
@@ -210,26 +211,34 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         const added = [...board].filter(([id]) => !povBoard!.has(id))
         const removed = [...povBoard].filter(([id]) => !board.has(id))
         const choiceResolved = !!povChoices && [...povChoices].some((id) => !choices.has(id))
-        // A buy sets the bought slot to Pkm.DEFAULT (game-commands SHOP handler). Reading the slot
-        // emptying — rather than the bought unit landing on the board — catches buys even when the
-        // species is still duplicated elsewhere in the shop, or the buy auto-combines into an evolution.
-        const bought: string[] = []
+        // Board changed this frame? A buy always does `player.board.set` (the bought unit lands on the
+        // bench); nothing else here that empties a shop slot touches the board.
+        const boardChanged = added.length > 0 || removed.length > 0 || board.size !== povBoard.size
+        // Slots cleared to Pkm.DEFAULT this frame. Two actions do this and ONLY these two:
+        //   • OnShopCommand (buy): deducts gold (0 in FREE_MARKET) AND board.set → board changes.
+        //   • OnRemoveFromShopCommand ("e"): clears the slot + locks the shop, never touches the board.
+        // So board-changed is the mode-independent discriminator (gold would misread a 0-cost buy).
+        const emptied: string[] = []
         for (let s = 0; s < povShop.length && s < shop.length; s++) {
-          if (povShop[s] !== Pkm.DEFAULT && shop[s] === Pkm.DEFAULT) bought.push(povShop[s])
+          if (povShop[s] !== Pkm.DEFAULT && shop[s] === Pkm.DEFAULT) emptied.push(povShop[s])
         }
-        // A reroll replaces slots with new non-empty values (a buy replaces none → 0 refreshed).
+        // A reroll replaces slots with new non-empty values (buy/remove replace none → 0 refreshed);
+        // gating on !boardChanged keeps a board-touching action (e.g. an Unown buy that resets the
+        // whole shop) from reading as a roll.
         const refreshed = shop.filter((s, k) => s !== povShop![k] && s !== Pkm.DEFAULT).length
 
         // Priority so one underlying action emits one event.
-        if (bought.length) {
-          bought.forEach((name) =>
-            actions.push({ t: f.t, type: "buy", label: `${prettyName(name)}${bought.length === 1 && dMoney < 0 ? ` (${dMoney})` : ""}` })
+        if (emptied.length) {
+          const kind = boardChanged ? "buy" : "remove"
+          emptied.forEach((name) =>
+            actions.push({ t: f.t, type: kind, label: `${prettyName(name)}${kind === "buy" && emptied.length === 1 && dMoney < 0 ? ` (${dMoney})` : ""}` })
           )
         } else if (choiceResolved && added.length) {
           actions.push({ t: f.t, type: "pick", label: `Picked ${prettyName(added[0][1])}` })
         } else if (removed.length && !added.length && dMoney > 0) {
+          // Sell. Gold-gated, so FREE_MARKET's 0-gold sells are missed — a documented special-mode gap.
           actions.push({ t: f.t, type: "sell", label: `${prettyName(removed[0][1])} (+${dMoney})` })
-        } else if (refreshed >= REROLL_MIN_REFRESHED_SLOTS) {
+        } else if (!boardChanged && refreshed >= REROLL_MIN_REFRESHED_SLOTS) {
           actions.push({ t: f.t, type: "reroll", label: dMoney < 0 ? `${dMoney} gold` : "free roll" })
         }
         if (typeof level === "number" && typeof povLevel === "number" && level > povLevel) {
