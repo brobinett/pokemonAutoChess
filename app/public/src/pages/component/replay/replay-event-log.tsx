@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import type { ReplayIndex } from "../../../game/replay-index"
+import { PkmByIndex } from "../../../../../types/enum/Pokemon"
+import { prettyName, type ReplayIndex } from "../../../game/replay-index"
 import type { ReplayRoom } from "../../../game/replay-room"
 import "./replay-event-log.css"
+
+// Combat-event naming, grounded in the actual payloads:
+//   ABILITY        → { id: simulationId, skill, positionX/Y (caster tile), targetX/Y } — no species in
+//                    the payload, so we show the skill + the caster's tile. Naming the caster unit would
+//                    need resolving the tile against the positional board state (a follow-up).
+//   POKEMON_DAMAGE → { index: ATTACKER species, amount, type (AttackType), x/y: victim tile }
+//   POKEMON_HEAL   → { index: HEALER  species, amount, type (HealType),  x/y: target tile }
+// So damage/heal name the SOURCE for free (index → PkmByIndex); the target is a tile in every case.
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 // Default dock: right edge ~6vw from the screen edge (aligned under the DPS meter, which clears the
@@ -88,7 +97,7 @@ type LogEvent = {
   type: string
   summary: string
   cat: Category
-  kind: "msg" | "phase" | "elim"
+  kind: "msg" | "phase" | "elim" | "action" | "pick"
 }
 
 const fmt = (ms: number) => {
@@ -96,15 +105,30 @@ const fmt = (ms: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
 }
 
+// AttackType: PHYSICAL=0, SPECIAL=1, TRUE=2 (app/types/enum/Game.ts).
+const DMG_TYPE = ["physical", "special", "true"]
+
 // Best-effort one-line summary of a ROOM_DATA payload. Kept defensive (payloads vary by type/version);
 // unknown shapes just show the type. Copy is intentionally terse — Blake owns the wording pass.
 function summarize(type: string, payload: unknown): string {
   const p = payload as Record<string, unknown> | number | null
   try {
     switch (type) {
-      case "ABILITY": return String((p as { skill?: string })?.skill ?? "")
-      case "POKEMON_DAMAGE": { const o = p as { amount?: number; x?: number; y?: number }; return `${o?.amount ?? "?"} dmg @(${o?.x},${o?.y})` }
-      case "POKEMON_HEAL": { const o = p as { amount?: number }; return `+${o?.amount ?? "?"} HP` }
+      case "ABILITY": {
+        const o = p as { skill?: string; positionX?: number; positionY?: number }
+        const skill = prettyName(o?.skill)
+        return o?.positionX != null ? `${skill} @(${o.positionX},${o.positionY})` : skill
+      }
+      case "POKEMON_DAMAGE": {
+        const o = p as { index?: string; amount?: number; type?: number; x?: number; y?: number }
+        const src = o?.index ? PkmByIndex[o.index] : undefined
+        return `${src ? prettyName(src) : "?"} ${o?.amount ?? "?"} ${DMG_TYPE[o?.type ?? 0] ?? ""} →(${o?.x},${o?.y})`
+      }
+      case "POKEMON_HEAL": {
+        const o = p as { index?: string; amount?: number; type?: number; x?: number; y?: number }
+        const src = o?.index ? PkmByIndex[o.index] : undefined
+        return `${src ? prettyName(src) : "?"} +${o?.amount ?? "?"}${o?.type === 0 ? " shield" : ""} →(${o?.x},${o?.y})`
+      }
       case "DISPLAY_TEXT": { const o = p as { text?: string }; return String(o?.text ?? "") }
       case "PLAYER_DAMAGE": return `${typeof p === "number" ? p : (p as { value?: number })?.value ?? "?"} life lost`
       case "PLAYER_INCOME": return `+${typeof p === "number" ? p : (p as { value?: number })?.value ?? "?"} gold`
@@ -247,6 +271,8 @@ export default function ReplayEventLog({
     })
     index?.segments.forEach((s) => out.push({ t: s.t, frame: -1, type: "PHASE", summary: `Stage ${s.stage} · ${s.phaseLabel}`, cat: "flow", kind: "phase" }))
     index?.events.filter((e) => e.type === "elimination").forEach((e) => out.push({ t: e.t, frame: -1, type: "ELIMINATION", summary: e.label, cat: "flow", kind: "elim" }))
+    // POV-player actions: reroll/buy/sell/level → Economy; proposition pick → Match flow.
+    index?.actions.forEach((a) => out.push({ t: a.t, frame: -1, type: a.type.toUpperCase(), summary: a.label, cat: a.type === "pick" ? "flow" : "economy", kind: a.type === "pick" ? "pick" : "action" }))
     return out.sort((a, b) => a.t - b.t || a.frame - b.frame)
   }, [room, index])
 
@@ -275,7 +301,9 @@ export default function ReplayEventLog({
     <div ref={panelRef} className="replay-eventlog my-container" style={posStyle}>
       <header className="rel-head" onMouseDown={onHeadDown}>
         <span className="rel-title">Event log</span>
-        <span className="rel-count">{visible.length}</span>
+        <span className="rel-count" title={`${visible.length} shown of ${events.length} total events`}>
+          {visible.length} / {events.length}
+        </span>
         <button className="rel-close" title="Close" onClick={onClose}>×</button>
       </header>
       <div className="rel-filters">

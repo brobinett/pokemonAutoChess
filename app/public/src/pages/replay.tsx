@@ -229,7 +229,7 @@ export default function Replay() {
     // Index the transcript once (phase/stage boundaries + eliminations) for the skip controls and the
     // timeline markers. Enhancement-only — a decode hiccup must not block playback, so swallow errors.
     try {
-      indexRef.current = buildReplayIndex(manifest.frames)
+      indexRef.current = buildReplayIndex(manifest.frames, manifest.viewerUid)
     } catch (e) {
       console.error("[replay] failed to build index", e)
       indexRef.current = null

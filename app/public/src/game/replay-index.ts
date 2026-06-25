@@ -18,7 +18,7 @@ import type { ReplayFrame } from "./replay-room"
 // The offline reference + CLI is replay/build-index.mjs in the superproject (verified there against
 // real recordings); this is the in-browser port.
 
-export const REPLAY_INDEX_SCHEMA_VERSION = 1
+export const REPLAY_INDEX_SCHEMA_VERSION = 2
 
 const PHASE_LABEL: Record<number, string> = {
   [GamePhaseState.PICK]: "PICK",
@@ -36,9 +36,19 @@ export interface ReplayStageMark {
   stage: number
   t: number // absolute ms the stage first appears
 }
+// "elimination" comes from any player's life crossing 0; the rest are POV-player actions derived by
+// diffing the recording player's own synced state (money / shop / board / level / proposition choices)
+// — they're recoverable only for the POV because opponents' shops/gold aren't synced to this client.
+export type ReplayEventType =
+  | "elimination"
+  | "reroll"
+  | "buy"
+  | "sell"
+  | "level"
+  | "pick"
 export interface ReplayEvent {
   t: number // absolute ms
-  type: "elimination"
+  type: ReplayEventType
   label: string
   uid?: string
 }
@@ -48,7 +58,21 @@ export interface ReplayIndex {
   durationMs: number
   segments: ReplaySegment[] // phase-within-stage boundaries, anchored at/after gameStartMs
   stages: ReplayStageMark[] // first t per distinct stage
-  events: ReplayEvent[] // sorted by t
+  events: ReplayEvent[] // eliminations, sorted by t — these drive the scrubber's event markers
+  // POV-player actions (reroll/buy/sell/level/proposition pick), sorted by t. Kept separate from
+  // `events` so they feed the event log WITHOUT flooding the scrubber with a marker per reroll/buy.
+  actions: ReplayEvent[]
+}
+
+// PAC enum values are SCREAMING_SNAKE (Pkm.SWINUB = "SWINUB", Ability.ICE_SPINNER); render them as
+// "Swinub" / "Ice Spinner". Derived from the value, so it survives a submodule bump (no i18n dep).
+export function prettyName(v: string | undefined | null): string {
+  if (!v) return ""
+  return v
+    .toLowerCase()
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ")
 }
 
 const b64ToBytes = (b64: string): Uint8Array =>
@@ -60,19 +84,31 @@ export function isElimination(prevLife: number | undefined, life: number): boole
   return typeof prevLife === "number" && prevLife > 0 && life <= 0
 }
 
-export function buildReplayIndex(frames: ReplayFrame[]): ReplayIndex {
+// How many shop slots must differ between frames to read as a reroll (a refresh replaces the whole
+// shop; a single buy empties one slot). 3+ changed slots is unambiguously a refresh, not a buy.
+const REROLL_MIN_CHANGED_SLOTS = 3
+
+export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): ReplayIndex {
   const ser = new SchemaSerializer<GameState>()
   let hasState = false
   let gameStartMs: number | null = null
   let durationMs = 0
 
   const segments: ReplaySegment[] = []
-  const events: ReplayEvent[] = []
+  const events: ReplayEvent[] = [] // eliminations only (scrubber markers + log)
+  const actions: ReplayEvent[] = [] // POV reroll/buy/sell/level/pick (log only)
 
   let prevPhase: number | undefined
   let prevStage: number | undefined
   const lifePrev = new Map<string, number>()
   const eliminated = new Set<string>()
+
+  // POV-player snapshots for the action derivation (money/level/shop/board/proposition-choices).
+  let povMoney: number | undefined
+  let povLevel: number | undefined
+  let povShop: string[] | undefined
+  let povBoard: Map<string, string> | undefined // unit id → name
+  let povChoices: Set<string> | undefined // choice ids currently offered
 
   for (const f of frames) {
     durationMs = Math.max(durationMs, f.t)
@@ -113,6 +149,48 @@ export function buildReplayIndex(frames: ReplayFrame[]): ReplayIndex {
       }
       lifePrev.set(uid, life)
     })
+
+    // POV-player actions, derived by diffing the recording player's own state frame-to-frame.
+    const pov = viewerUid ? state.players?.get(viewerUid) : undefined
+    if (pov) {
+      const money = pov.money
+      const level = pov.experienceManager?.level
+      const shop = pov.shop ? Array.from(pov.shop as ArrayLike<string>) : []
+      const board = new Map<string, string>()
+      pov.board?.forEach((u, id) => board.set(id, u.name))
+      const choices = new Set<string>()
+      pov.choices?.forEach((c) => choices.add(c.id))
+
+      if (povBoard && povShop) {
+        const dMoney = typeof money === "number" && typeof povMoney === "number" ? money - povMoney : 0
+        const added = [...board].filter(([id]) => !povBoard!.has(id))
+        const removed = [...povBoard].filter(([id]) => !board.has(id))
+        const choiceResolved = !!povChoices && [...povChoices].some((id) => !choices.has(id))
+        const changedSlots = shop.filter((s, i) => s !== povShop![i]).length +
+          Math.abs(shop.length - povShop.length)
+        // a bought unit leaves the shop: its name was offered last frame and is gone now
+        const boughtName = added.find(([, name]) => povShop!.includes(name) && !shop.includes(name))?.[1]
+
+        // Priority order so one underlying action emits one event.
+        if (choiceResolved && added.length) {
+          actions.push({ t: f.t, type: "pick", label: `Picked ${prettyName(added[0][1])}` })
+        } else if (boughtName) {
+          actions.push({ t: f.t, type: "buy", label: `${prettyName(boughtName)}${dMoney < 0 ? ` (${dMoney})` : ""}` })
+        } else if (removed.length && !added.length && dMoney > 0) {
+          actions.push({ t: f.t, type: "sell", label: `${prettyName(removed[0][1])} (+${dMoney})` })
+        } else if (changedSlots >= REROLL_MIN_CHANGED_SLOTS) {
+          actions.push({ t: f.t, type: "reroll", label: dMoney < 0 ? `${dMoney} gold` : "free roll" })
+        }
+        if (typeof level === "number" && typeof povLevel === "number" && level > povLevel) {
+          actions.push({ t: f.t, type: "level", label: `→ ${level}` })
+        }
+      }
+      povMoney = money
+      povLevel = level
+      povShop = shop
+      povBoard = board
+      povChoices = choices
+    }
   }
 
   // The opening frames arrive during the loading screen, so the transcript starts on a phantom
@@ -142,7 +220,8 @@ export function buildReplayIndex(frames: ReplayFrame[]): ReplayIndex {
     durationMs,
     segments: indexedSegments,
     stages,
-    events: events.sort((a, b) => a.t - b.t)
+    events: events.sort((a, b) => a.t - b.t),
+    actions: actions.sort((a, b) => a.t - b.t)
   }
 }
 
