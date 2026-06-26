@@ -95,6 +95,7 @@ const DEFAULT_ON: Record<Category, boolean> = {
 const ACTION_CAT: Record<string, Category> = {
   pick: "flow",
   round: "flow",
+  town: "flow",
   item: "items",
   craft: "items",
   egg: "synergy",

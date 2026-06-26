@@ -54,6 +54,7 @@ export type ReplayEventType =
   | "fish" // Water synergy fished a pokemon onto the bench
   | "gained" // a unit appeared on the bench from some other effect (wanderer catch, reward…)
   | "round" // a fight resolved → win / loss / draw vs the opponent (player.history)
+  | "town" // a town encounter NPC appeared (state.townEncounter — shared, game-level)
   | "item" // an item entered player.items (pve reward, town, synergy grant, ability, dig…)
   | "craft" // two components combined into a completed item (player.items, via ItemRecipe)
   | "level"
@@ -155,6 +156,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
 
   let prevPhase: number | undefined
   let prevStage: number | undefined
+  let prevTownEncounter: string | null | undefined // state.townEncounter (shared town NPC)
   const lifePrev = new Map<string, number>()
   const eliminated = new Set<string>()
 
@@ -213,6 +215,14 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       prevPhase = ph
       prevStage = st
     }
+
+    // Town encounter — a shared, game-level NPC (state.townEncounter), not POV-specific. Its rewards
+    // land in player state separately (items / money / etc.), captured by those diffs.
+    const te = (state as { townEncounter?: string | null }).townEncounter ?? null
+    if (prevTownEncounter !== undefined && te && te !== prevTownEncounter) {
+      actions.push({ t: f.t, type: "town", label: `Town: ${prettyName(te)}` })
+    }
+    prevTownEncounter = te
 
     state.players?.forEach((p, uid) => {
       const life = p.life
