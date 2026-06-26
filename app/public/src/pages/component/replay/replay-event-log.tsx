@@ -24,11 +24,13 @@ const DEFAULT_RIGHT = "6vw"
 // phase/stage transitions derived from the state stream — each stamped with the re-based mm:ss AND its
 // frame index. Clicking a row seeks there; the row at the playhead is highlighted and auto-scrolled.
 //
-// Events are grouped into a handful of player-facing CATEGORIES (combat / economy / match-flow /
-// synergy / flavor / engine), each with a filter chip in the header. Engine (board/sim bookkeeping)
-// is off by default since it's high-frequency plumbing; the rest are on. Filtering only hides rows —
-// it never drops data from the recording — so the format's "downgradeable to an analysis log"
-// property (FORMAT.md) is preserved.
+// Events are grouped into player-facing CATEGORIES (combat / economy / items / match-flow / synergy /
+// flavor / positioning / engine), each with a filter chip in the header. Three are OFF by default
+// because they're high-volume and bury the match "story": Combat (~92% of all rows — per-tick
+// ability/damage/heal; toggle on to drill into a fight), Positioning (every unit move), and Engine
+// (board/sim plumbing). The default view is the readable arc of the game — buys, rounds, synergies,
+// items, eliminations. Filtering only hides rows — it never drops data from the recording — so the
+// format's "downgradeable to an analysis log" property (FORMAT.md) is preserved.
 //
 // Purely additive + replay-only (rendered only by the /replay page), reading the manifest frames the
 // ReplayRoom already holds, plus the shared useDraggable hook the game's other windows use — no effect
@@ -82,7 +84,7 @@ const CATEGORIES: { key: Category; label: string }[] = [
 ]
 
 const DEFAULT_ON: Record<Category, boolean> = {
-  combat: true,
+  combat: false, // ~92% of all rows (per-tick ability/damage/heal) — buries the match story; opt-in
   economy: true,
   items: true,
   flow: true,
