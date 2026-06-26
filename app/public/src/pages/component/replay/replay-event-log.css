@@ -76,6 +76,7 @@
 .rel-chip-flow.on { background: #8fd0ff; }
 .rel-chip-synergy.on { background: #9be08f; }
 .rel-chip-flavor.on { background: #c9a3ff; }
+.rel-chip-positioning.on { background: #6fd6c4; }
 .rel-chip-engine.on { background: #aab0b6; }
 
 .rel-list {
@@ -112,4 +113,5 @@
 .rel-cat-flow .rel-type { color: #8fd0ff; }
 .rel-cat-synergy .rel-type { color: #9be08f; }
 .rel-cat-flavor .rel-type { color: #c9a3ff; }
+.rel-cat-positioning .rel-type { color: #6fd6c4; }
 .rel-cat-engine .rel-type { color: #aab0b6; }

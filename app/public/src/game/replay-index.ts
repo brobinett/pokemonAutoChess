@@ -55,10 +55,31 @@ export type ReplayEventType =
   | "gained" // a unit appeared on the bench from some other effect (wanderer catch, reward…)
   | "round" // a fight resolved → win / loss / draw vs the opponent (player.history)
   | "town" // a town encounter NPC appeared (state.townEncounter — shared, game-level)
-  | "item" // an item entered player.items (pve reward, town, synergy grant, ability, dig…)
-  | "craft" // two components combined into a completed item (player.items, via ItemRecipe)
+  | "item" // an item entered player.items with no unit losing it (pve reward, town, synergy, dig…)
+  | "craft" // components combined into a completed item (player.items bench-combine OR onto a unit)
+  | "equip" // an item left player.items and landed on a board unit
+  | "unequip" // an item returned from a board unit to player.items (benching removable items)
+  | "move" // a board unit's (x,y) changed (deploy / bench / rearrange) — own "positioning" chip
   | "level"
   | "pick"
+
+// Duplicate-aware diff of two string multisets (item/component lists): what was added / removed going
+// prev→cur. Used for the player.items diff and the per-unit pokemon.items diff (duplicates matter — a
+// player can hold two of the same component).
+function multisetDiff(prev: string[], cur: string[]): { added: string[]; removed: string[] } {
+  const count = (arr: string[]) => {
+    const m = new Map<string, number>()
+    for (const x of arr) m.set(x, (m.get(x) ?? 0) + 1)
+    return m
+  }
+  const a = count(prev)
+  const b = count(cur)
+  const added: string[] = []
+  const removed: string[] = []
+  b.forEach((n, k) => { for (let j = 0; j < n - (a.get(k) ?? 0); j++) added.push(k) })
+  a.forEach((n, k) => { for (let j = 0; j < n - (b.get(k) ?? 0); j++) removed.push(k) })
+  return { added, removed }
+}
 
 // Is `evolved` a (possibly divergent) evolution of `base`? Used to confirm a board churn is really an
 // evolution — and to label it — rather than a coincidental same-frame remove+add.
@@ -168,6 +189,8 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   let povChoices: Set<string> | undefined // choice ids currently offered
   let povHistoryLen: number | undefined // length of player.history (each new entry = a round result)
   let povItems: string[] | undefined // player.items (bench items; multiset — duplicates matter)
+  let povUnitItems: Map<string, string[]> | undefined // unit id → its pokemon.items (for equip/unequip)
+  let povUnitPos: Map<string, { x: number; y: number }> | undefined // unit id → (positionX, positionY)
 
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i]
@@ -241,7 +264,15 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       const level = pov.experienceManager?.level
       const shop = pov.shop ? Array.from(pov.shop as ArrayLike<string>) : []
       const board = new Map<string, string>()
-      pov.board?.forEach((u, id) => board.set(id, u.name))
+      // Per-unit item sets (pokemon.items is a SetSchema) + positions, captured this frame for the
+      // equip/unequip and positioning diffs below.
+      const unitItems = new Map<string, string[]>()
+      const unitPos = new Map<string, { x: number; y: number }>()
+      pov.board?.forEach((u, id) => {
+        board.set(id, u.name)
+        unitItems.set(id, u.items ? [...(u.items as Iterable<string>)] : [])
+        unitPos.set(id, { x: u.positionX ?? 0, y: u.positionY ?? 0 })
+      })
       const choices = new Set<string>()
       pov.choices?.forEach((c) => choices.add(c.id))
       const items = pov.items ? Array.from(pov.items as ArrayLike<string>) : []
@@ -342,39 +373,117 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         }
       }
 
-      // Item changes (player.items multiset diff): a craft (2 components → 1 result via ItemRecipe), else
-      // an item gained. Sources of "gained" are many (pve/town rewards, synergy grants, abilities, dig,
-      // harvest…); the diff catches them all. (Removals — equip onto a unit / unequip return — are not
-      // yet split out; that needs per-unit pokemon.items tracking — a follow-up.)
-      if (povItems !== undefined) {
-        const count = (arr: string[]) => {
-          const m = new Map<string, number>()
-          for (const x of arr) m.set(x, (m.get(x) ?? 0) + 1)
-          return m
+      // Item events — classify the player.items diff against this frame's per-unit pokemon.items
+      // movements, so a removal/addition is correctly read as an equip / unequip / on-unit craft / sell
+      // return rather than a bare "gained". Item flow between the player inventory and units:
+      //   • equip          (OnDragDropItemCommand): player.items loses X, the dropped unit gains X.
+      //   • on-unit craft  (OnDragDropItemCommand): a basic component C is dropped onto a unit already
+      //                     holding a component D → the unit's items go D→R (ItemRecipe[R]={C,D}) while
+      //                     player.items loses C. Distinct from the bench craft (player.items: 2→1).
+      //   • bench craft    (OnDragDropItemCommand): two components in player.items combine into a result.
+      //   • bench unequip  (onPokemonChangePosition, newY===0): RemovableItems on the unit return to
+      //                     player.items; the unit stays on the board (positionY→0). Detected
+      //                     structurally (unit loses X + player gains X, unit still present) — no need to
+      //                     hardcode the RemovableItems list, so it stays mode-independent (SLAMINGO too).
+      //   • sell return    (OnSellPokemonCommand): the unit is deleted and ALL its items return to
+      //                     player.items. These are NOT new gains — the sell event already fired, so we
+      //                     suppress them (don't emit "Got X").
+      //   • gained         (everything else): a player.items addition with no unit losing it and no
+      //                     craft behind it — pve/town rewards, synergy grants, abilities, dig, harvest…
+      // (Caveat: a Human-TM return on bench arrives via pokemon.tm, not pokemon.items, so it currently
+      // reads as a plain "gained" — a minor edge case not worth per-unit tm tracking.)
+      if (povItems !== undefined && povUnitItems !== undefined && povBoard) {
+        const { added: pAdded, removed: pRemoved } = multisetDiff(povItems, items)
+
+        // Per-unit item movements this frame, with the unit's (prettified) name — current board name,
+        // else the previous-frame name (a unit deleted this frame, e.g. a sell). `present` distinguishes
+        // a bench unequip (unit still on board) from a sell return (unit gone).
+        type UnitDelta = { id: string; name: string; item: string; present: boolean }
+        const uGained: UnitDelta[] = []
+        const uLost: UnitDelta[] = []
+        const ids = new Set<string>([...povUnitItems.keys(), ...unitItems.keys()])
+        for (const id of ids) {
+          const name = prettyName(board.get(id) ?? povBoard.get(id) ?? "")
+          const present = board.has(id)
+          const d = multisetDiff(povUnitItems.get(id) ?? [], unitItems.get(id) ?? [])
+          for (const it of d.added) uGained.push({ id, name, item: it, present })
+          for (const it of d.removed) uLost.push({ id, name, item: it, present })
         }
-        const prevC = count(povItems)
-        const curC = count(items)
-        const added: string[] = []
-        const removed: string[] = []
-        curC.forEach((n, k) => { for (let j = 0; j < n - (prevC.get(k) ?? 0); j++) added.push(k) })
-        prevC.forEach((n, k) => { for (let j = 0; j < n - (curC.get(k) ?? 0); j++) removed.push(k) })
-        // crafts first, consuming their components+result from the pools so they aren't double-counted
-        for (let a = added.length - 1; a >= 0; a--) {
-          const recipe = ItemRecipe[added[a] as keyof typeof ItemRecipe]
-          if (recipe && recipe.length === 2) {
-            const pool = [...removed]
-            const i0 = pool.indexOf(recipe[0])
-            if (i0 >= 0) pool.splice(i0, 1)
-            const i1 = i0 >= 0 ? pool.indexOf(recipe[1]) : -1
-            if (i0 >= 0 && i1 >= 0) {
-              actions.push({ t: f.t, type: "craft", label: `${prettyName(recipe[0])} + ${prettyName(recipe[1])} → ${prettyName(added[a])}` })
-              removed.splice(removed.indexOf(recipe[0]), 1)
-              removed.splice(removed.indexOf(recipe[1]), 1)
-              added.splice(a, 1)
-            }
+        const takeStr = (arr: string[], x: string): boolean => {
+          const k = arr.indexOf(x)
+          if (k < 0) return false
+          arr.splice(k, 1)
+          return true
+        }
+        const takeUnit = (arr: UnitDelta[], pred: (u: UnitDelta) => boolean): UnitDelta | undefined => {
+          const k = arr.findIndex(pred)
+          return k < 0 ? undefined : arr.splice(k, 1)[0]
+        }
+
+        // 1) On-unit craft: a unit gained result R and lost component D, player.items lost the other
+        //    component C, with ItemRecipe[R] = {C, D}. Run first so it consumes its parts (R, D, C).
+        for (let g = uGained.length - 1; g >= 0; g--) {
+          const R = uGained[g].item
+          const recipe = ItemRecipe[R as keyof typeof ItemRecipe]
+          if (!recipe || recipe.length !== 2) continue
+          const lostD = uLost.find((u) => u.id === uGained[g].id && (u.item === recipe[0] || u.item === recipe[1]))
+          if (!lostD) continue
+          const C = lostD.item === recipe[0] ? recipe[1] : recipe[0]
+          if (!pRemoved.includes(C)) continue
+          takeStr(pRemoved, C)
+          takeUnit(uLost, (u) => u === lostD)
+          actions.push({ t: f.t, type: "craft", label: `${prettyName(recipe[0])} + ${prettyName(recipe[1])} → ${prettyName(R)} on ${uGained[g].name}` })
+          uGained.splice(g, 1)
+        }
+
+        // 2) Bench craft (player.items only): a result enters and both its components leave player.items.
+        for (let a = pAdded.length - 1; a >= 0; a--) {
+          const recipe = ItemRecipe[pAdded[a] as keyof typeof ItemRecipe]
+          if (!recipe || recipe.length !== 2) continue
+          const i0 = pRemoved.indexOf(recipe[0])
+          if (i0 < 0) continue
+          const rest = [...pRemoved]
+          rest.splice(i0, 1)
+          if (rest.indexOf(recipe[1]) < 0) continue
+          pRemoved.splice(pRemoved.indexOf(recipe[0]), 1)
+          pRemoved.splice(pRemoved.indexOf(recipe[1]), 1)
+          actions.push({ t: f.t, type: "craft", label: `${prettyName(recipe[0])} + ${prettyName(recipe[1])} → ${prettyName(pAdded[a])}` })
+          pAdded.splice(a, 1)
+        }
+
+        // 3) Equip: player.items lost X and a unit gained X this frame.
+        for (let i = pRemoved.length - 1; i >= 0; i--) {
+          const u = takeUnit(uGained, (g) => g.item === pRemoved[i])
+          if (u) {
+            actions.push({ t: f.t, type: "equip", label: `Equipped ${prettyName(pRemoved[i])} on ${u.name}` })
+            pRemoved.splice(i, 1)
           }
         }
-        for (const x of added) actions.push({ t: f.t, type: "item", label: `Got ${prettyName(x)}` })
+
+        // 4) Remaining player.items additions: an unequip return (a still-present unit lost it), a sell
+        //    return (a deleted unit lost it → suppress; the sell already fired), else a genuine gain.
+        for (const x of pAdded) {
+          const u = takeUnit(uLost, (l) => l.item === x)
+          if (u) {
+            if (u.present) actions.push({ t: f.t, type: "unequip", label: `Unequipped ${prettyName(x)} from ${u.name}` })
+            // else: sold unit's item returning — folded into the sell event, not a gain.
+          } else {
+            actions.push({ t: f.t, type: "item", label: `Got ${prettyName(x)}` })
+          }
+        }
+      }
+
+      // Positioning — any board unit whose (positionX, positionY) changed: a deploy (bench→board),
+      // benching (board→bench), or a same-zone rearrange (Fighting's training cares about bench order).
+      // Very high-frequency, so it lives in its own "positioning" chip (default OFF, like Engine). Only
+      // units present in both frames qualify; a fresh buy/evolve has no prior position (handled above).
+      if (povUnitPos) {
+        unitPos.forEach((p, id) => {
+          const prev = povUnitPos!.get(id)
+          if (prev && (prev.x !== p.x || prev.y !== p.y)) {
+            actions.push({ t: f.t, type: "move", label: `${prettyName(board.get(id) ?? "")} → (${p.x},${p.y})` })
+          }
+        })
       }
 
       povMoney = money
@@ -384,6 +493,8 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       povChoices = choices
       povHistoryLen = historyLen
       povItems = items
+      povUnitItems = unitItems
+      povUnitPos = unitPos
     }
   }
 
