@@ -95,6 +95,7 @@ import GameSpectatePlayerInfo from "./component/game/game-spectate-player-info"
 import GameStageInfo from "./component/game/game-stage-info"
 import GameSynergies from "./component/game/game-synergies"
 import GameToasts from "./component/game/game-toasts"
+import { clearPortraitBase64Cache } from "./component/game/game-pokemon-portrait"
 import { MainSidebar } from "./component/main-sidebar/main-sidebar"
 import { ConnectionStatusNotification } from "./component/system/connection-status-notification"
 import { playMusic, preloadMusic } from "./utils/audio"
@@ -255,6 +256,9 @@ export default function Game() {
     const token = await firebase.auth().currentUser?.getIdToken()
 
     if (gameContainer && gameContainer.game) {
+      // The portrait textures bake this game's POV customs and die with the TextureManager here — drop
+      // their base64 cache so the next game/recording can't show this one's cached sprites.
+      clearPortraitBase64Cache()
       gameContainer.game.destroy(true)
     }
 
@@ -602,7 +606,15 @@ export default function Game() {
           }
         })
 
-        room.onMessage(Transfer.GAME_END, leave)
+        room.onMessage(Transfer.GAME_END, () => {
+          // In a replay, GAME_END is a recorded frame, not a live end-of-match signal: running the live
+          // `leave` flow would destroy Phaser and fire a real client.create("after-game") against the
+          // live server under the viewer's identity (→ the CONNECTION_FAILED screen finish() exists to
+          // avoid). The ReplayRoom parks on its final frame via finish()/onEnded instead. Guard on the
+          // fixed replay roomId so live games are untouched (mirrors the spectate guards above/below).
+          if ((room as { roomId?: string }).roomId === "replay") return
+          leave()
+        })
 
         room.onMessage(Transfer.DRAG_DROP_CANCEL, (message) =>
           gameContainer.handleDragDropCancel(message)

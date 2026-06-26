@@ -255,9 +255,20 @@ export class ReplayRoom {
   private applyNext(): boolean {
     if (this.idx >= this.queue.length) return false
     const f = this.queue[this.idx]
-    this.applyFrame(f)
-    this.currentMs = f.t
-    if (f.kind !== "message") this.fire(this.stateChangeHandlers, this.state)
+    try {
+      this.applyFrame(f)
+      this.currentMs = f.t
+      if (f.kind !== "message") this.fire(this.stateChangeHandlers, this.state)
+    } catch (e) {
+      // A decoder/render callback fires synchronously inside serializer.setState/patch, so a throwing
+      // callback (or a corrupt / cross-version frame) escapes here. This runs in the playback setTimeout
+      // (scheduleNext) and in stepForward — an uncaught throw would kill the timer, never re-reach
+      // scheduleNext, and halt playback permanently (ReplayErrorBoundary can't catch a setTimeout throw).
+      // Skip the bad frame and keep playing, matching buildReplayIndex's skip-and-continue on the same
+      // decode. currentMs still advances so the scrubber doesn't stall on the skipped frame.
+      console.error("[replay] frame apply error (skipped)", e)
+      this.currentMs = f.t
+    }
     this.idx++
     return true
   }

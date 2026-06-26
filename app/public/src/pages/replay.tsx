@@ -23,6 +23,7 @@ import ReplayErrorBoundary from "./component/replay/replay-error-boundary"
 import "./component/replay/replay-readonly.css"
 import "./component/replay/replay-ui.css" // overlay/file-picker styles (needed before ReplayControls mounts)
 import Game, { getGameContainer, reattachReplayRoom } from "./game"
+import { clearPortraitBase64Cache } from "./component/game/game-pokemon-portrait"
 
 // The own-POV action controls (lock shop, reroll, buy XP, buy from shop, pick a proposition) are
 // rendered by the unchanged game UI and would call into the (no-op) ReplayRoom.send — i.e. they look
@@ -521,6 +522,9 @@ function ReplayGameHost() {
   useEffect(
     () => () => {
       try {
+        // Drop the portrait base64 cache with the textures it mirrors, so a later recording (or a live
+        // game entered after this route) with different POV customs can't show this one's cached sprites.
+        clearPortraitBase64Cache()
         getGameContainer()?.game?.destroy(true)
       } catch {
         /* already gone */

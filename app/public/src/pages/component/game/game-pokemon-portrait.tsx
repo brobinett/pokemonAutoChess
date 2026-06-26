@@ -30,9 +30,12 @@ import "./game-pokemon-portrait.css"
 // canvas.toDataURL() — an expensive readback. This function is called from every portrait render (shop,
 // bench, board tooltips, synergy panels, propositions…), and those components re-render on every board/
 // player state change, so on a busy board it was re-encoding the same portraits many times a second
-// (the dominant main-thread JS cost during combat — surfaced by profiling the replay viewer). The
-// base64 of `portrait-${index}` never changes for a given index, so cache it once per index. The key is
-// the texture key (index only, matching getBase64's own key); customs only feed the pre-load URL
+// (the dominant main-thread JS cost during combat — surfaced by profiling the replay viewer). The base64
+// of `portrait-${index}` is stable WITHIN a game, so cache it once per index. It is NOT globally constant:
+// preloadPortraits bakes the POV player's shiny/emotion customs into the texture, and the TextureManager
+// is destroyed on game teardown — so the cache must be dropped at that boundary (clearPortraitBase64Cache),
+// else a later game/recording with different customs for the same species shows the previous sprite. The
+// key is the texture key (index only, matching getBase64's own key); customs only feed the pre-load URL
 // fallback. Only the real base64 is cached — if the texture isn't loaded yet we return the URL fallback
 // WITHOUT caching, so a later render (once the texture exists) still gets to cache the base64.
 const portraitBase64Cache = new Map<string, string>()
@@ -42,11 +45,12 @@ export function getCachedPortrait(
 ): string {
   const cached = portraitBase64Cache.get(index)
   if (cached !== undefined) return cached
-  // Only read back a texture that's actually loaded: getBase64 returns the __MISSING placeholder's data
-  // URL (not null) for an absent key, so gating on exists() both avoids a wasted toDataURL of the
-  // placeholder AND keeps us from caching it (a later render, once the texture loads, then caches the
-  // real portrait). When the texture isn't present, fall back to the portrait URL — which honours the
-  // shiny/emotion customs, unlike the index-keyed texture.
+  // Only read back a texture that's actually loaded. getBase64 returns "" (empty string) for an absent
+  // key — the prior `getBase64(...) ?? getPortraitSrc(...)` used ??, which doesn't catch "", so it
+  // returned a broken url("") until the texture loaded. Gating on exists() both avoids a wasted toDataURL
+  // and fixes that: when the texture isn't present we fall back to the portrait URL (which honours the
+  // shiny/emotion customs, unlike the index-keyed texture) and do NOT cache the fallback, so a later
+  // render once the texture loads still caches the real portrait.
   const scene = getGameScene()
   if (scene?.textures.exists(`portrait-${index}`)) {
     const base64 = scene.textures.getBase64(`portrait-${index}`)
@@ -55,6 +59,14 @@ export function getCachedPortrait(
   }
   const pokemonCustom = getPkmWithCustom(index, customs)
   return getPortraitSrc(index, pokemonCustom.shiny, pokemonCustom.emotion)
+}
+
+/** Drop every cached portrait base64. The cache mirrors the lifetime of the `portrait-${index}` textures,
+ * which bake the POV player's customs and are destroyed with the Phaser TextureManager on game teardown.
+ * Call this at each such boundary (live leave, /replay route unmount, loading a new recording) so a later
+ * game/recording with different shiny/emotion for the same species can't show the previous one's sprite. */
+export function clearPortraitBase64Cache() {
+  portraitBase64Cache.clear()
 }
 
 export default function GamePokemonPortrait(props: {
