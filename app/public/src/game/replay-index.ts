@@ -2,9 +2,11 @@ import { SchemaSerializer } from "@colyseus/sdk"
 import type { Iterator } from "@colyseus/schema"
 import type GameState from "../../../rooms/states/game-state"
 import { getPokemonData } from "../../../models/precomputed/precomputed-pokemon-data"
+import { SynergyTriggers } from "../../../config/game/synergies"
 import { BattleResult, GamePhaseState, PokemonActionState } from "../../../types/enum/Game"
 import { ItemRecipe } from "../../../types/enum/Item"
 import { Pkm } from "../../../types/enum/Pokemon"
+import type { Synergy } from "../../../types/enum/Synergy"
 import type { ReplayFrame } from "./replay-room"
 
 // A compact index of where the interesting moments are in a recording: every phase-within-stage
@@ -54,6 +56,7 @@ export type ReplayEventType =
   | "fish" // Water synergy fished a pokemon onto the bench
   | "gained" // a unit appeared on the bench from some other effect (wanderer catch, reward…)
   | "round" // a fight resolved → win / loss / draw vs the opponent (player.history)
+  | "synergy" // a synergy tier activated/upgraded — player.synergies crossed a SynergyTriggers threshold
   | "town" // a town encounter NPC appeared (state.townEncounter — shared, game-level)
   | "item" // an item entered player.items with no unit losing it (pve reward, town, synergy, dig…)
   | "craft" // components combined into a completed item (player.items bench-combine OR onto a unit)
@@ -191,6 +194,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   let povItems: string[] | undefined // player.items (bench items; multiset — duplicates matter)
   let povUnitItems: Map<string, string[]> | undefined // unit id → its pokemon.items (for equip/unequip)
   let povUnitPos: Map<string, { x: number; y: number }> | undefined // unit id → (positionX, positionY)
+  let povSynSteps: Map<string, number> | undefined // synergy → active tier step (#thresholds met)
 
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i]
@@ -486,6 +490,32 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         })
       }
 
+      // Synergy thresholds — when player.synergies crosses a SynergyTriggers tier (e.g. Electric 3).
+      // The "step" is how many thresholds the current count meets (mirrors getSynergyStep); a step
+      // increase = a tier activated/upgraded. We label with the threshold VALUE that was reached
+      // (triggers[s]) so it reads as the in-game synergy bar ("Electric 3"). Counts are locked in prep
+      // (computeSynergies), so this never fires mid-combat. We only report increases — a downgrade from
+      // selling isn't an activation. (Terrain / Falinks effects live in player.effects, not synergies —
+      // they're board-driven battlefield states, out of scope for the synergy-tier event.)
+      const synSteps = new Map<string, number>()
+      pov.synergies?.forEach((count, syn) => {
+        const triggers = SynergyTriggers[syn as Synergy] ?? []
+        let step = 0
+        for (const t of triggers) if ((count ?? 0) >= t) step++
+        if (step > 0) synSteps.set(syn, step)
+      })
+      if (povSynSteps) {
+        synSteps.forEach((step, syn) => {
+          const prev = povSynSteps!.get(syn) ?? 0
+          if (step > prev) {
+            const triggers = SynergyTriggers[syn as Synergy] ?? []
+            for (let s = prev; s < step; s++) {
+              actions.push({ t: f.t, type: "synergy", label: `${prettyName(syn)} ${triggers[s]}` })
+            }
+          }
+        })
+      }
+
       povMoney = money
       povLevel = level
       povShop = shop
@@ -495,6 +525,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       povItems = items
       povUnitItems = unitItems
       povUnitPos = unitPos
+      povSynSteps = synSteps
     }
   }
 

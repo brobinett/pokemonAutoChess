@@ -105,6 +105,7 @@ const ACTION_CAT: Record<string, Category> = {
   egg: "synergy",
   fish: "synergy",
   hatch: "synergy",
+  synergy: "synergy",
   move: "positioning"
 }
 
