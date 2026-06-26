@@ -310,12 +310,19 @@ export default class WanderersManager {
     tweens.push(tween)
 
     sprite.draggable = false
-    sprite.sprite.setInteractive()
-    sprite.sprite.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
-      if (caught || !onClick) return
-      caught = onClick(wanderer, sprite, pointer)
-      if (caught) tweens.forEach((tween) => tween.destroy())
-    })
+    // In the replay viewer the room is a ReplayRoom (roomId "replay"): catching a wanderer is a no-op
+    // command anyway, but the click still runs the local cosmetic effects (a "+shards" popup, sprite
+    // destroy, "caught" text), which misleads — nothing is actually gained. A replay is read-only, so
+    // leave the wanderer to walk across uninteractable. Live play is unaffected (roomId is the match id).
+    const isReplay = this.scene.room?.roomId === "replay"
+    if (!isReplay) {
+      sprite.sprite.setInteractive()
+      sprite.sprite.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+        if (caught || !onClick) return
+        caught = onClick(wanderer, sprite, pointer)
+        if (caught) tweens.forEach((tween) => tween.destroy())
+      })
+    }
 
     return sprite
   }

@@ -47,10 +47,19 @@ function installReadonlyGuard(): () => void {
       e.preventDefault()
     }
   }
+  // Suppress the browser's native context menu across the whole replay route. The live game already
+  // does this on `#game-wrapper` (right-click is PAC's unit/item detail, handled by Phaser, not the DOM
+  // contextmenu event) — but the replay's own overlays (loading/seeking/error cards, file picker,
+  // controls bar) render as SIBLINGS of `#game-wrapper`, so a right-click on them escapes that handler
+  // and pops the browser menu (most visibly while the seek/loading overlay covers the screen). A
+  // capture-phase document handler closes that gap without touching the live page.
+  const blockContextMenu = (e: Event) => e.preventDefault()
   document.addEventListener("click", block, true)
+  document.addEventListener("contextmenu", blockContextMenu, true)
   return () => {
     document.body.classList.remove("replay-mode")
     document.removeEventListener("click", block, true)
+    document.removeEventListener("contextmenu", blockContextMenu, true)
   }
 }
 
@@ -94,6 +103,13 @@ export default function Replay() {
   const seekTargetRef = useRef<number | null>(null)
   const navMs = () =>
     seekTargetRef.current ?? replayRoom.current?.currentMs ?? 0
+  // Serialize seeks. A seek restarts the Phaser scene (reattachReplayRoom → scene.start); firing another
+  // scene.start before the first finishes rebuilding stacks restarts and can wedge the renderer (the
+  // rapid-seek "stuck forever" hang). seekInFlight is true from a seek boot() until its begin() settles;
+  // a seek requested meanwhile just records its target in pendingSeek (and updates navMs), and begin()
+  // applies the latest one as a single clean reboot once the current seek lands.
+  const seekInFlightRef = useRef(false)
+  const pendingSeekRef = useRef<number | null>(null)
 
   const params = new URLSearchParams(window.location.search)
   const speed = Number(params.get("speed") ?? "1")
@@ -160,7 +176,20 @@ export default function Replay() {
     if (!manifest) return
     const prev = replayRoom.current
     const target = Math.max(0, atMs)
-    bootPausedRef.current = isSeek ? !!prev?.paused : false
+    // A seek is still rebuilding the scene: don't start a second scene.start now (stacking restarts is
+    // what wedges the renderer). Record the latest target — begin() will apply it as one clean reboot
+    // when the in-flight seek lands — and keep navMs accumulating toward it. (Initial load is never a
+    // seek, so it's never blocked here.)
+    if (isSeek && seekInFlightRef.current) {
+      pendingSeekRef.current = target
+      seekTargetRef.current = target
+      return
+    }
+    if (isSeek) seekInFlightRef.current = true
+    // Carry play/pause across a seek (a paused scrub stays paused) EXCEPT when (re)starting after the
+    // replay ended: finish() leaves the room paused+ended, so without the !ended guard a restart would
+    // boot paused and the play button would need a second press to actually play.
+    bootPausedRef.current = isSeek && !prev?.ended ? !!prev?.paused : false
     seekTargetRef.current = target // navigate relative to this until the seek settles (begin() clears it)
     prev?.pause() // stop the outgoing timer so it can't apply frames into the scene being re-attached
 
@@ -249,6 +278,7 @@ export default function Replay() {
     const room = replayRoom.current
     const frames = manifestRef.current?.frames
     if (!room || !frames) return
+    room.pause() // frame-stepping implies paused (mirrors stepForward) so the reboot-seek lands paused
     let prevT = 0
     for (const f of frames) {
       if (f.kind === "message") continue
@@ -408,6 +438,15 @@ export default function Replay() {
         gc.gameScene.battle.onSimulationStart()
       }
       setPlaying(true)
+      // Seek settled — release the serialization gate. If seeks were requested while this one was
+      // rebuilding, they coalesced into pendingSeek (latest wins); apply it now as one clean reboot.
+      // Cleared before the drained boot() so that boot proceeds instead of re-queuing onto itself.
+      seekInFlightRef.current = false
+      const pendingSeek = pendingSeekRef.current
+      if (pendingSeek != null) {
+        pendingSeekRef.current = null
+        boot(pendingSeek, true)
+      }
     }
     const waitReady = () => {
       if (cancelled) return

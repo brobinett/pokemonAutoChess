@@ -24,6 +24,7 @@ import "./replay-ui.css"
 // it. Matches replay.tsx's keyboard-cycle SPEEDS.
 const SPEEDS = [0.5, 1, 2, 4]
 const POS_KEY = "replay.controls.pos"
+const DOCK_GAP = 8 // px gap between the bar's bottom edge and the shop's top edge when default-docked
 
 const fmt = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000))
@@ -79,17 +80,29 @@ export default function ReplayControls({
   const barRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ x: number; y: number } | null>(loadPos)
 
-  // Default dock: centered just above the shop strip. We measure the live `.game-shop` element (its
-  // height is viewport-relative) and anchor the bar's bottom edge a small gap above the shop's top,
-  // so it sits in the band between the shop and the bench. Re-measured cheaply (the shop mounts/settles
-  // async and its height changes on resize). A user drag switches to a persisted px position and stops
-  // the auto-dock (effect early-returns once `pos` is set).
-  const [shopTop, setShopTop] = useState<number | null>(null)
+  // Default dock: just above the shop strip, LEFT-anchored (not centered). We measure the live
+  // `.game-shop` (its position is viewport-relative) and the bar's own width, then anchor the bar's
+  // upper-left corner over the shop. Anchoring the left edge — rather than the center — keeps that
+  // corner put so any width change extends the bar rightward instead of recentering it; the frame-step
+  // buttons are now always present (constant width), so toggling play/pause no longer shifts the bar.
+  // `bottom` re-tracks the shop each measure (it mounts/settles async, height changes on resize);
+  // `left` is frozen on the first good measure so it never drifts. A user drag switches to a persisted
+  // px position and stops the auto-dock (effect early-returns once `pos` is set).
+  const [dock, setDock] = useState<{ left: number; bottom: number } | null>(null)
   useEffect(() => {
     if (pos) return
     const measure = () => {
-      const r = document.querySelector(".game-shop")?.getBoundingClientRect()
-      if (r && r.height > 0) setShopTop(r.top) // ignore a hidden/zero-size shop; keep the last good value
+      const shop = document.querySelector(".game-shop")?.getBoundingClientRect()
+      const bar = barRef.current?.getBoundingClientRect()
+      if (shop && shop.height > 0 && bar && bar.width > 0) {
+        const bottom = window.innerHeight - shop.top + DOCK_GAP
+        setDock((d) => ({
+          left:
+            d?.left ??
+            clamp(shop.left + (shop.width - bar.width) / 2, 8, window.innerWidth - bar.width - 8),
+          bottom
+        }))
+      }
     }
     measure()
     window.addEventListener("resize", measure)
@@ -138,14 +151,12 @@ export default function ReplayControls({
   const span = Math.max(1, room.totalMs - base)
   const elapsed = Math.max(0, room.currentMs - base)
   const pct = Math.min(100, Math.max(0, (elapsed / span) * 100))
-  // Dragged → absolute px. Otherwise dock above the shop (bottom-anchored, since the bar is
-  // position:fixed): the shop top sits `innerHeight - shopTop` px from the viewport bottom, so adding
-  // a gap places the bar just above it. Fall back to top-center until the shop has been measured.
-  const DOCK_GAP = 8
+  // Dragged → absolute px. Otherwise the left-anchored dock above the shop (bottom-anchored vertically,
+  // since the bar is position:fixed). Fall back to top-center until the shop + bar have been measured.
   const posStyle: React.CSSProperties = pos
     ? { left: pos.x, top: pos.y }
-    : shopTop != null
-      ? { left: "50%", bottom: window.innerHeight - shopTop + DOCK_GAP, transform: "translateX(-50%)" }
+    : dock
+      ? { left: dock.left, bottom: dock.bottom }
       : { left: "50%", top: 58, transform: "translateX(-50%)" }
 
   // Skip-button targets from the index. Navigate from the in-flight seek target while a seek is
@@ -163,7 +174,6 @@ export default function ReplayControls({
     : null
 
   const here = index ? segmentAt(index, room.currentMs) : null
-  const paused = room.paused && !room.ended
 
   // Marker / band fraction along the re-based track [0,1].
   const frac = (t: number) => clamp((t - base) / span, 0, 1)
@@ -222,18 +232,18 @@ export default function ReplayControls({
         </>
       )}
 
-      {/* Frame-step appears when paused — the inspect-a-fight-tick-by-tick tool. Back is a reboot-seek
-          (decoder is forward-only) so it's a touch slower than forward. */}
-      {paused && (
-        <span className="rc-step">
-          <button className="bubbly rc-skip" title="Step back one frame (,)" onClick={onStepBackward}>
-            −1
-          </button>
-          <button className="bubbly rc-skip" title="Step forward one frame (.)" onClick={onStepForward}>
-            +1
-          </button>
-        </span>
-      )}
+      {/* Frame-step — the inspect-a-fight-tick-by-tick tool. Always present so toggling play/pause never
+          resizes the bar (its width is constant). While playing, the step handlers pause first, then
+          advance/rewind one frame. Back is a reboot-seek (the decoder is forward-only) so it's a touch
+          slower than forward. */}
+      <span className="rc-step">
+        <button className="bubbly rc-skip" title="Step back one frame (,)" onClick={onStepBackward}>
+          −1
+        </button>
+        <button className="bubbly rc-skip" title="Step forward one frame (.)" onClick={onStepForward}>
+          +1
+        </button>
+      </span>
 
       <span className="rc-time">{fmt(elapsed)}</span>
 

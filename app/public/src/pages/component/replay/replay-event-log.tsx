@@ -212,6 +212,11 @@ export default function ReplayEventLog({
   const [enabled, setEnabled] = useState<Record<Category, boolean>>(loadFilters)
   const [, force] = useState(0)
   const panelRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null) // scroll container; the active-row class is applied here imperatively
+  // onSeek is recreated by the parent each render; hold it in a ref so the memoized row list (below) isn't
+  // invalidated by its changing identity on every 200ms poll tick.
+  const onSeekRef = useRef(onSeek)
+  onSeekRef.current = onSeek
   // restore the saved box (drag position {x,y} + size {w,h}). Position drives the panel only once it's
   // been dragged; until then the default dock (via posStyle) applies. Size is applied imperatively so
   // the CSS resize handle stays the source of truth.
@@ -328,10 +333,46 @@ export default function ReplayEventLog({
     if (visible[i].t <= cur) activeIdx = i
     else break
   }
-  const activeRef = useRef<HTMLDivElement | null>(null)
+
+  // The rows are STATIC during playback — only which one is "active" changes as the playhead advances.
+  // Rendering them inline meant the 200ms poll re-reconciled the whole list every tick (up to ~3200 rows
+  // with Combat on → seconds of main-thread blocking per minute). Memoize the row elements on [visible,
+  // base] so the poll re-render reuses the same element refs and React skips the rows entirely; the active
+  // highlight + autoscroll are then applied imperatively (below) without re-rendering any row.
+  const rows = useMemo(
+    () =>
+      // Build nothing while closed (the panel renders null below) — keeps a never-opened log free.
+      !open ? [] : visible.map((e, i) => (
+        <div
+          key={`${e.frame}:${e.t}:${i}`}
+          data-i={i}
+          className={`rel-row rel-${e.kind} rel-cat-${e.cat}`}
+          title={`seek to ${fmt(e.t - base)}`}
+          onClick={() => onSeekRef.current(e.t)}
+        >
+          <span className="rel-t">{fmt(e.t - base)}</span>
+          <span className="rel-frame">{e.frame >= 0 ? `#${e.frame}` : "·"}</span>
+          <span className="rel-type">{e.type}</span>
+          <span className="rel-sum">{e.summary}</span>
+        </div>
+      )),
+    [visible, base, open]
+  )
+
+  // Move the `active` class + autoscroll imperatively as the playhead advances, so tracking the playhead
+  // costs one classList swap per tick instead of a full re-render of the (memoized) row list. Re-runs when
+  // the rows change (filter toggle / index load) so the highlight re-attaches to the freshly rendered DOM.
   useEffect(() => {
-    if (open) activeRef.current?.scrollIntoView({ block: "nearest" })
-  }, [activeIdx, open])
+    if (!open) return
+    const list = listRef.current
+    if (!list) return
+    list.querySelector(".rel-row.active")?.classList.remove("active")
+    const el = list.querySelector<HTMLElement>(`.rel-row[data-i="${activeIdx}"]`)
+    if (el) {
+      el.classList.add("active")
+      el.scrollIntoView({ block: "nearest" })
+    }
+  }, [activeIdx, open, rows])
 
   if (!open) return null
   const toggle = (k: Category) => setEnabled((e) => ({ ...e, [k]: !e[k] }))
@@ -360,21 +401,8 @@ export default function ReplayEventLog({
           </button>
         ))}
       </div>
-      <div className="rel-list">
-        {visible.map((e, i) => (
-          <div
-            key={`${e.frame}:${e.t}:${i}`}
-            ref={i === activeIdx ? activeRef : undefined}
-            className={`rel-row rel-${e.kind} rel-cat-${e.cat}${i === activeIdx ? " active" : ""}`}
-            title={`seek to ${fmt(e.t - base)}`}
-            onClick={() => onSeek(e.t)}
-          >
-            <span className="rel-t">{fmt(e.t - base)}</span>
-            <span className="rel-frame">{e.frame >= 0 ? `#${e.frame}` : "·"}</span>
-            <span className="rel-type">{e.type}</span>
-            <span className="rel-sum">{e.summary}</span>
-          </div>
-        ))}
+      <div className="rel-list" ref={listRef}>
+        {rows}
       </div>
     </div>
   )

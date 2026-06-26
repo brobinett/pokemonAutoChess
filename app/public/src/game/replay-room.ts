@@ -134,11 +134,19 @@ export class ReplayRoom {
   private fastForwardStateTo(ms: number) {
     while (this.idx < this.queue.length && this.queue[this.idx].t <= ms) {
       const f = this.queue[this.idx]
-      if (f.kind === "message") {
-        if (f.type === "PRELOAD_MAPS")
-          this.preloadMapsPayload = this.decodePayload(f.payload)
-      } else {
-        this.applyFrame(f)
+      try {
+        if (f.kind === "message") {
+          if (f.type === "PRELOAD_MAPS")
+            this.preloadMapsPayload = this.decodePayload(f.payload)
+        } else {
+          this.applyFrame(f)
+        }
+      } catch (e) {
+        // A corrupt / cross-version frame must not throw out of the constructor: a SEEK calls boot()
+        // (→ new ReplayRoom) directly from a UI handler, not inside a promise chain, so an uncaught throw
+        // would dead-end the seek silently (the new room is never assigned; the old one stays paused).
+        // Skip the bad frame and keep fast-forwarding — matching applyNext / buildReplayIndex.
+        console.error("[replay] fast-forward frame error (skipped)", e)
       }
       this.currentMs = f.t
       this.idx++
@@ -240,11 +248,17 @@ export class ReplayRoom {
       guard++ < this.queue.length
     ) {
       const f = this.queue[this.idx]
-      if (f.kind === "message") {
-        if (f.type === "PRELOAD_MAPS")
-          this.preloadMapsPayload = this.decodePayload(f.payload)
-      } else {
-        this.applyFrame(f)
+      try {
+        if (f.kind === "message") {
+          if (f.type === "PRELOAD_MAPS")
+            this.preloadMapsPayload = this.decodePayload(f.payload)
+        } else {
+          this.applyFrame(f)
+        }
+      } catch (e) {
+        // As in fastForwardStateTo: a bad frame during the constructor loading-skip must not throw out
+        // of the constructor. Skip and continue.
+        console.error("[replay] skip-loading frame error (skipped)", e)
       }
       this.currentMs = f.t
       this.idx++

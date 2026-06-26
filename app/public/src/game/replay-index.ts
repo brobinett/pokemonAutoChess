@@ -359,8 +359,12 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         const choiceResolved = resolved.length > 0
         // A pokemon proposition resolved this frame (starter / addPick / unique / legendary): match the
         // chosen entry against the units that appeared on the board (a duo adds both its Pokémon) so we
-        // can show what it was picked OVER. null if we can't match (bench full → sold, special-rule
-        // replacement) — then the generic "Picked X" fallback below still fires.
+        // can show what it was picked OVER. null if we can't match the chosen entry to a board add
+        // (special-rule replacement) — the pick branch below then logs a generic "Picked <first added>".
+        // (If the pick added NOTHING — e.g. a bench-full proposition auto-sold on resolve — added.length
+        // is 0, so no pick event fires at all; that sell isn't traced back to the proposition.) Only the
+        // first pokemon slate is labelled here; two pokemon propositions co-resolving in one frame is not
+        // reachable in practice (their stages are disjoint), so it's not worth iterating.
         const pokeSlate = resolved.find((s) => s.pokemons.length > 0)
         let pokePickLabel: string | null = null
         if (pokeSlate) {
