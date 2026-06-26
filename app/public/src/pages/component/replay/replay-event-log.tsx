@@ -106,6 +106,9 @@ const ACTION_CAT: Record<string, Category> = {
   fish: "synergy",
   hatch: "synergy",
   synergy: "synergy",
+  berry: "synergy",
+  flower: "synergy",
+  wanderer: "synergy",
   move: "positioning"
 }
 

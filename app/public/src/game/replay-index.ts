@@ -54,6 +54,9 @@ export type ReplayEventType =
   | "hatch" // an egg hatched into a pokemon
   | "egg" // Baby synergy laid an egg
   | "fish" // Water synergy fished a pokemon onto the bench
+  | "berry" // Grass: a berry tree ripened (reached stage 3) — harvest itself surfaces as an item gain
+  | "flower" // Flora: a flower in a pot evolved (mulch-fed)
+  | "wanderer" // a catchable wandering pokemon appeared (catching it = a "gained")
   | "gained" // a unit appeared on the bench from some other effect (wanderer catch, reward…)
   | "round" // a fight resolved → win / loss / draw vs the opponent (player.history)
   | "synergy" // a synergy tier activated/upgraded — player.synergies crossed a SynergyTriggers threshold
@@ -195,6 +198,9 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   let povUnitItems: Map<string, string[]> | undefined // unit id → its pokemon.items (for equip/unequip)
   let povUnitPos: Map<string, { x: number; y: number }> | undefined // unit id → (positionX, positionY)
   let povSynSteps: Map<string, number> | undefined // synergy → active tier step (#thresholds met)
+  let povBerryStages: number[] | undefined // player.berryTreesStages (Grass: 1→3 ripen cycle)
+  let povFlowers: string[] | undefined // player.flowerPots[i].name (Flora: evolves in place)
+  let povWandererIds: Set<string> | undefined // player.wanderers keys (uuid per appearance)
 
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i]
@@ -516,6 +522,54 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         })
       }
 
+      // --- Grass / Flora / wanderer events (UNVERIFIED off-source — the fixture runs none of these
+      // synergies; signals are source-cited, to be confirmed against a Grass/Flora/wanderer capture). ---
+
+      // Grass — a berry tree ripened (stage reached 3, harvestable). Picking it returns the berry to
+      // player.items (already caught as an item gain), so the ripen is the distinct, decoupled signal.
+      // berryTreesType[i] names the berry. A portal/region change zeroes stages (mini-game.ts) — a drop,
+      // not a ripen — so it never fires here. (OnPickBerryCommand / berry growth in game-commands.ts.)
+      const berryStages = pov.berryTreesStages ? Array.from(pov.berryTreesStages as ArrayLike<number>) : []
+      const berryTypes = pov.berryTreesType ? Array.from(pov.berryTreesType as ArrayLike<string>) : []
+      if (povBerryStages) {
+        for (let i = 0; i < berryStages.length; i++) {
+          if ((povBerryStages[i] ?? 0) < 3 && (berryStages[i] ?? 0) >= 3) {
+            actions.push({ t: f.t, type: "berry", label: `${prettyName(berryTypes[i] ?? "Berry")} ripe` })
+          }
+        }
+      }
+
+      // Flora — a flower in a pot evolved. flowerPots is seeded full at game start (initFlowerPots) and
+      // evolves in place (rich-mulch drop), so the discrete event is a slot's species changing to its
+      // evolution. (OnDragDropItemCommand flower-pot-zone in game-commands.ts.)
+      const flowers: string[] = []
+      pov.flowerPots?.forEach((p) => flowers.push(p?.name ?? ""))
+      if (povFlowers) {
+        for (let i = 0; i < flowers.length; i++) {
+          const prev = povFlowers[i]
+          if (prev && flowers[i] && prev !== flowers[i] && evolvesTo(prev, flowers[i])) {
+            actions.push({ t: f.t, type: "flower", label: `Flower → ${prettyName(flowers[i])}` })
+          }
+        }
+      }
+
+      // Wanderer — a catchable pokemon appeared (player.wanderers gains an entry, keyed by a fresh uuid;
+      // spawnWanderingPokemon in player.ts). Catching it adds a board unit (a "gained"); clears/catches
+      // delete keys. So new keys = appearances.
+      const wandererIds = new Set<string>()
+      const wandererPkm = new Map<string, string>()
+      pov.wanderers?.forEach((w, id) => {
+        wandererIds.add(id)
+        wandererPkm.set(id, (w as { pkm?: string })?.pkm ?? "")
+      })
+      if (povWandererIds) {
+        wandererIds.forEach((id) => {
+          if (!povWandererIds!.has(id)) {
+            actions.push({ t: f.t, type: "wanderer", label: `Wandering ${prettyName(wandererPkm.get(id) ?? "")}` })
+          }
+        })
+      }
+
       povMoney = money
       povLevel = level
       povShop = shop
@@ -526,6 +580,9 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       povUnitItems = unitItems
       povUnitPos = unitPos
       povSynSteps = synSteps
+      povBerryStages = berryStages
+      povFlowers = flowers
+      povWandererIds = wandererIds
     }
   }
 
