@@ -5,7 +5,7 @@ import { getPokemonData } from "../../../models/precomputed/precomputed-pokemon-
 import { SynergyTriggers } from "../../../config/game/synergies"
 import { BattleResult, GamePhaseState, PokemonActionState } from "../../../types/enum/Game"
 import { ItemRecipe } from "../../../types/enum/Item"
-import { Pkm } from "../../../types/enum/Pokemon"
+import { Pkm, PkmDuos } from "../../../types/enum/Pokemon"
 import type { Synergy } from "../../../types/enum/Synergy"
 import type { ReplayFrame } from "./replay-room"
 
@@ -145,6 +145,25 @@ export function prettyName(v: string | undefined | null): string {
 const b64ToBytes = (b64: string): Uint8Array =>
   Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
 
+// A proposition entry (player.choices[].pokemons) is a PkmProposition = Pkm | PkmDuo. A duo (e.g.
+// Latios+Latias) resolves to TWO Pokémon that both land on the board (PkmDuos), so expand it to its
+// constituents — both to MATCH the chosen entry against the board units that appeared, and to render
+// it ("Latios + Latias"). A plain Pkm is its own single constituent.
+const propositionConstituents = (p: string): string[] =>
+  p in PkmDuos ? [...PkmDuos[p as keyof typeof PkmDuos]] : [p]
+const prettyProposition = (p: string): string =>
+  propositionConstituents(p).map(prettyName).join(" + ")
+
+// "Picked X over Y, Z" — what was chosen and the options passed up. Falls back to just "Picked X" for
+// a single-option slate (shouldn't happen for a real proposition, but stays graceful).
+function pickedOverLabel(chosen: string, alternatives: string[]): string {
+  return alternatives.length ? `Picked ${chosen} over ${alternatives.join(", ")}` : `Picked ${chosen}`
+}
+
+// The full slate of a player.choices entry, snapshotted per frame so that when a choice is resolved
+// (it leaves player.choices the frame the player picks) we can recover the options that were offered.
+type ChoiceSlate = { type: string; pokemons: string[]; items: string[] }
+
 // A player is eliminated the frame their life first crosses from positive to <= 0. Pure so the
 // crossing logic can be unit-tested (recordings rarely reach a death in the captured stages).
 export function isElimination(prevLife: number | undefined, life: number): boolean {
@@ -210,7 +229,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   let povLevel: number | undefined
   let povShop: string[] | undefined
   let povBoard: Map<string, string> | undefined // unit id → name
-  let povChoices: Set<string> | undefined // choice ids currently offered
+  let povChoices: Map<string, ChoiceSlate> | undefined // choice id → its offered slate
   let povHistoryLen: number | undefined // length of player.history (each new entry = a round result)
   let povItems: string[] | undefined // player.items (bench items; multiset — duplicates matter)
   let povUnitItems: Map<string, string[]> | undefined // unit id → its pokemon.items (for equip/unequip)
@@ -315,7 +334,21 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         unitPos.set(id, { x: u.positionX ?? 0, y: u.positionY ?? 0 })
       })
       const choices = new Set<string>()
-      pov.choices?.forEach((c) => choices.add(c.id))
+      const choiceSlates = new Map<string, ChoiceSlate>()
+      pov.choices?.forEach((c) => {
+        choices.add(c.id)
+        choiceSlates.set(c.id, {
+          type: c.type,
+          pokemons: c.pokemons ? [...(c.pokemons as Iterable<string>)] : [],
+          items: c.items ? [...(c.items as Iterable<string>)] : []
+        })
+      })
+      // Choices resolved this frame: present last frame, gone now (the player picked → the choice left
+      // player.choices). Their snapshotted slate is what the pick was made FROM. Auto-pick on timeout can
+      // resolve several at once, so this is a list. Used below to enrich the pokemon/item pick labels.
+      const resolved = povChoices
+        ? [...povChoices].filter(([id]) => !choices.has(id)).map(([, slate]) => slate)
+        : []
       const items = pov.items ? Array.from(pov.items as ArrayLike<string>) : []
       const historyLen = pov.history?.length ?? 0
 
@@ -323,7 +356,25 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         const dMoney = typeof money === "number" && typeof povMoney === "number" ? money - povMoney : 0
         const added = [...board].filter(([id]) => !povBoard!.has(id))
         const removed = [...povBoard].filter(([id]) => !board.has(id))
-        const choiceResolved = !!povChoices && [...povChoices].some((id) => !choices.has(id))
+        const choiceResolved = resolved.length > 0
+        // A pokemon proposition resolved this frame (starter / addPick / unique / legendary): match the
+        // chosen entry against the units that appeared on the board (a duo adds both its Pokémon) so we
+        // can show what it was picked OVER. null if we can't match (bench full → sold, special-rule
+        // replacement) — then the generic "Picked X" fallback below still fires.
+        const pokeSlate = resolved.find((s) => s.pokemons.length > 0)
+        let pokePickLabel: string | null = null
+        if (pokeSlate) {
+          const addedNames = new Set(added.map(([, n]) => n))
+          const chosen = pokeSlate.pokemons.find((p) =>
+            propositionConstituents(p).some((c) => addedNames.has(c))
+          )
+          if (chosen) {
+            pokePickLabel = pickedOverLabel(
+              prettyProposition(chosen),
+              pokeSlate.pokemons.filter((p) => p !== chosen).map(prettyProposition)
+            )
+          }
+        }
         // Board changed this frame? A buy always does `player.board.set` (the bought unit lands on the
         // bench); nothing else here that empties a shop slot touches the board.
         const boardChanged = added.length > 0 || removed.length > 0 || board.size !== povBoard.size
@@ -379,7 +430,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
             actions.push({ t: f.t, type: kind, label: `${prettyName(name)}${kind === "buy" && emptied.length === 1 && dMoney < 0 ? ` (${dMoney})` : ""}` })
           )
         } else if (choiceResolved && added.length) {
-          actions.push({ t: f.t, type: "pick", label: `Picked ${prettyName(added[0][1])}` })
+          actions.push({ t: f.t, type: "pick", label: pokePickLabel ?? `Picked ${prettyName(added[0][1])}` })
         } else if (removed.length && !added.length && removed.length <= 3 && pov.alive !== false) {
           // Sell — structural (a board unit leaves with no add and no shop-slot buy), so it's
           // mode-independent (catches FREE_MARKET 0-gold sells). Eliminations don't clear the board
@@ -459,6 +510,24 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         const takeUnit = (arr: UnitDelta[], pred: (u: UnitDelta) => boolean): UnitDelta | undefined => {
           const k = arr.findIndex(pred)
           return k < 0 ? undefined : arr.splice(k, 1)[0]
+        }
+
+        // 0) Item proposition pick: a resolved choice whose slate is items (a component / synergy-item
+        //    offer). The chosen item entered player.items this frame — log it as a pick (showing what it
+        //    was chosen over) and consume it from pAdded so the gain/craft classification below skips it.
+        //    Run first so the picked item can't be misread as a craft result or a bare gain. (Wand offers
+        //    go to player.fairyWands, not player.items, so they don't surface here — out of scope.)
+        const itemSlate = resolved.find((s) => s.items.length > 0)
+        if (itemSlate) {
+          const chosen = itemSlate.items.find((it) => pAdded.includes(it))
+          if (chosen) {
+            takeStr(pAdded, chosen)
+            actions.push({
+              t: f.t,
+              type: "pick",
+              label: pickedOverLabel(prettyName(chosen), itemSlate.items.filter((it) => it !== chosen).map(prettyName))
+            })
+          }
         }
 
         // 1) On-unit craft: a unit gained result R and lost component D, player.items lost the other
@@ -605,7 +674,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       povLevel = level
       povShop = shop
       povBoard = board
-      povChoices = choices
+      povChoices = choiceSlates
       povHistoryLen = historyLen
       povItems = items
       povUnitItems = unitItems
