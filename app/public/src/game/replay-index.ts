@@ -123,6 +123,12 @@ export interface ReplayIndex {
   // The ABILITY / POKEMON_DAMAGE / POKEMON_HEAL payloads identify units by (simulationId, x, y), not
   // by id, so we look the tile up against the simulation positions decoded as of that frame.
   combatUnits: Record<number, { caster?: string; target?: string }>
+  // Message-frame indices that belong to ANOTHER player and must be hidden from this single-POV log.
+  // DIG / COOK / SHOW_EMOTE are `room.broadcast` (every client receives them), so the POV capture
+  // contains other players' digs/cooks/emotes; we resolve the owner (the digging/cooking unit's player,
+  // or the emote's uid) and flag the non-POV ones. Combat is `broadcastToSpectators` (the POV's own
+  // fight) and GAME_END / LOADING_COMPLETE are game-level, so those are NOT filtered.
+  foreignFrames: number[]
 }
 
 // PAC enum values are SCREAMING_SNAKE (Pkm.SWINUB = "SWINUB", Ability.ICE_SPINNER); render them as
@@ -170,6 +176,17 @@ function unitAt(
   return name
 }
 
+// Which player's board (bench + board) currently holds `unitId`. Used to attribute a `room.broadcast`
+// DIG / COOK (payload `pokemonId` = the digging/cooking unit) to its owner, so other players' broadcasts
+// can be filtered out of this single-POV log. Returns undefined if the unit isn't in any board this frame.
+function playerOwningUnit(state: GameState, unitId: string): string | undefined {
+  let owner: string | undefined
+  state.players?.forEach((p, uid) => {
+    if (!owner && (p as { board?: { get?: (id: string) => unknown } }).board?.get?.(unitId)) owner = uid
+  })
+  return owner
+}
+
 export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): ReplayIndex {
   const ser = new SchemaSerializer<GameState>()
   let hasState = false
@@ -180,6 +197,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   const events: ReplayEvent[] = [] // eliminations only (scrubber markers + log)
   const actions: ReplayEvent[] = [] // POV reroll/buy/sell/level/pick (log only)
   const combatUnits: Record<number, { caster?: string; target?: string }> = {}
+  const foreignFrames: number[] = [] // non-POV DIG/COOK/SHOW_EMOTE message frames (room.broadcast leak)
 
   let prevPhase: number | undefined
   let prevStage: number | undefined
@@ -222,6 +240,19 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         } else {
           const target = unitAt(state, pl?.id, pl?.x, pl?.y)
           if (target) combatUnits[i] = { target }
+        }
+      }
+      // POV-scope the `room.broadcast` player events: DIG / COOK belong to the digging/cooking unit's
+      // owner (payload.pokemonId), SHOW_EMOTE to payload.id (a uid). Flag the ones that aren't the POV
+      // so the event log can hide them. Keep when the owner can't be resolved (don't drop a POV event).
+      if (viewerUid) {
+        if (f.type === "SHOW_EMOTE") {
+          const id = (f.payload as { id?: string })?.id
+          if (id && id !== viewerUid) foreignFrames.push(i)
+        } else if (hasState && (f.type === "DIG" || f.type === "COOK")) {
+          const pid = (f.payload as { pokemonId?: string })?.pokemonId
+          const owner = pid ? playerOwningUnit(ser.getState(), pid) : undefined
+          if (owner && owner !== viewerUid) foreignFrames.push(i)
         }
       }
       continue
@@ -615,7 +646,8 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     stages,
     events: events.sort((a, b) => a.t - b.t),
     actions: actions.sort((a, b) => a.t - b.t),
-    combatUnits
+    combatUnits,
+    foreignFrames
   }
 }
 

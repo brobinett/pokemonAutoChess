@@ -300,8 +300,12 @@ export default function ReplayEventLog({
   // each tagged with its category.
   const events = useMemo<LogEvent[]>(() => {
     const out: LogEvent[] = []
+    // DIG / COOK / SHOW_EMOTE are room-broadcast to every client, so the POV capture holds other players'
+    // too; the index flags the non-POV ones (by the owning unit / emote uid) — hide them from this
+    // single-POV log. (Combat is spectator-scoped to the POV's own fight; GAME_END/LOADING are game-level.)
+    const foreign = new Set(index?.foreignFrames ?? [])
     room.manifest.frames.forEach((f, i) => {
-      if (f.kind === "message") {
+      if (f.kind === "message" && !foreign.has(i)) {
         const type = String(f.type)
         out.push({ t: f.t, frame: i, type, summary: summarize(type, f.payload, index?.combatUnits?.[i]), cat: CATEGORY_OF[type] ?? "engine", kind: "msg" })
       }
