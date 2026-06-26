@@ -256,8 +256,16 @@ export default class PokemonSprite extends DraggableObject {
       scene.spectate === false
     this.setDepth(DEPTH.POKEMON)
 
-    // prevents persisting details between game transitions
-    if (isGameScene(this.scene) && this.scene.lastPokemonDetail) {
+    // prevents persisting details between game transitions. Skipped in a replay: the viewer opens
+    // details manually, and the recorded player's actions keep constructing new sprites (a buy, an
+    // evolve, a combat spawn) — closing on every construction would dismiss the viewer's open detail on
+    // each recorded action. A seek restarts the whole scene (which destroys details), and right-clicking
+    // another unit still closes the old one via openDetail()→closeTooltips(), so nothing leaks.
+    if (
+      isGameScene(this.scene) &&
+      this.scene.lastPokemonDetail &&
+      this.scene.room?.roomId !== "replay"
+    ) {
       this.scene.lastPokemonDetail.closeDetail()
       this.scene.lastPokemonDetail = null
     }

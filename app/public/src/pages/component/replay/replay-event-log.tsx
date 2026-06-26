@@ -136,8 +136,15 @@ const DMG_TYPE = ["physical", "special", "true"]
 
 // Best-effort one-line summary of a ROOM_DATA payload. Kept defensive (payloads vary by type/version);
 // unknown shapes just show the type. Copy is intentionally terse — Blake owns the wording pass.
-function summarize(type: string, payload: unknown, names?: { caster?: string; target?: string }): string {
+type FrameInfo = {
+  caster?: string
+  target?: string
+  dig?: { x: number; y: number; depth: number }
+  income?: { base: number; interest: number; streak: number }
+}
+function summarize(type: string, payload: unknown, info?: FrameInfo): string {
   const p = payload as Record<string, unknown> | number | null
+  const names = info // combat caster/target naming reads `names` below; dig/income read `info`
   try {
     switch (type) {
       case "ABILITY": {
@@ -168,13 +175,32 @@ function summarize(type: string, payload: unknown, names?: { caster?: string; ta
         return prettyName(t.startsWith("ability.") ? t.slice("ability.".length) : t)
       }
       case "PLAYER_DAMAGE": return `${typeof p === "number" ? p : (p as { value?: number })?.value ?? "?"} life lost`
-      case "PLAYER_INCOME": return `+${typeof p === "number" ? p : (p as { value?: number })?.value ?? "?"} gold`
+      case "PLAYER_INCOME": {
+        const total = typeof p === "number" ? p : (p as { value?: number })?.value
+        if (total == null) return "+? gold"
+        const b = info?.income
+        if (b) {
+          // The income breakdown (base = 5 + red-scale bonus, interest, win-streak bonus). Show only the
+          // components that contributed; base is always present.
+          const parts = [`${b.base} base`]
+          if (b.interest) parts.push(`${b.interest} interest`)
+          if (b.streak) parts.push(`${b.streak} streak`)
+          return `+${total}g (${parts.join(" + ")})`
+        }
+        return `+${total}g`
+      }
       case "FINAL_RANK": return `placed #${typeof p === "number" ? p : (p as { value?: number })?.value ?? "?"}`
       case "PRELOAD_MAPS": return Array.isArray(payload) ? `${payload.length} region maps` : ""
       case "LOADING_COMPLETE": return "game start"
       case "GAME_END": return "game over"
       case "COOK": { const o = p as { dishes?: string[] }; return Array.isArray(o?.dishes) && o.dishes.length ? `cooked ${o.dishes.map(prettyName).join(", ")}` : "cooked a dish" }
-      case "DIG": { const o = p as { buriedItem?: string | null }; return o?.buriedItem ? `dug up ${prettyName(o.buriedItem)}` : "dug — nothing" }
+      case "DIG": {
+        const o = p as { buriedItem?: string | null }
+        const found = o?.buriedItem ? `, found ${prettyName(o.buriedItem)}` : ""
+        const d = info?.dig
+        if (d) return `Dug (${d.x},${d.y}) to depth ${d.depth}${found}`
+        return o?.buriedItem ? `Dug up ${prettyName(o.buriedItem)}` : "Dug a hole"
+      }
       case "NPC_DIALOG": { const o = p as { npc?: string; dialog?: string }; return `${prettyName(o?.npc)}: ${o?.dialog ?? ""}`.trim() }
       case "SHOW_EMOTE": return "emote"
       default: return ""
@@ -210,6 +236,10 @@ export default function ReplayEventLog({
   onClose: () => void
 }) {
   const [enabled, setEnabled] = useState<Record<Category, boolean>>(loadFilters)
+  // Auto-follow the playhead (scroll the active row into view each tick). Off → the user can scroll the
+  // log freely while playback continues in the background without being yanked back to the current event.
+  // Re-enabling jumps back to the playhead. A manual wheel-scroll auto-unlocks (feels natural).
+  const [follow, setFollow] = useState(true)
   const [, force] = useState(0)
   const panelRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null) // scroll container; the active-row class is applied here imperatively
@@ -312,7 +342,8 @@ export default function ReplayEventLog({
     room.manifest.frames.forEach((f, i) => {
       if (f.kind === "message" && !foreign.has(i)) {
         const type = String(f.type)
-        out.push({ t: f.t, frame: i, type, summary: summarize(type, f.payload, index?.combatUnits?.[i]), cat: CATEGORY_OF[type] ?? "engine", kind: "msg" })
+        const info: FrameInfo = { ...index?.combatUnits?.[i], dig: index?.digInfo?.[i], income: index?.incomeInfo?.[i] }
+        out.push({ t: f.t, frame: i, type, summary: summarize(type, f.payload, info), cat: CATEGORY_OF[type] ?? "engine", kind: "msg" })
       }
     })
     index?.segments.forEach((s) => out.push({ t: s.t, frame: -1, type: "PHASE", summary: `Stage ${s.stage} · ${s.phaseLabel}`, cat: "flow", kind: "phase" }))
@@ -370,9 +401,9 @@ export default function ReplayEventLog({
     const el = list.querySelector<HTMLElement>(`.rel-row[data-i="${activeIdx}"]`)
     if (el) {
       el.classList.add("active")
-      el.scrollIntoView({ block: "nearest" })
+      if (follow) el.scrollIntoView({ block: "nearest" })
     }
-  }, [activeIdx, open, rows])
+  }, [activeIdx, open, rows, follow])
 
   if (!open) return null
   const toggle = (k: Category) => setEnabled((e) => ({ ...e, [k]: !e[k] }))
@@ -387,6 +418,13 @@ export default function ReplayEventLog({
         <span className="rel-count" title={`${visible.length} shown of ${events.length} total events`}>
           {visible.length} / {events.length}
         </span>
+        <button
+          className={`rel-follow${follow ? " on" : ""}`}
+          title={follow ? "Following playback — click to scroll the log freely" : "Free scroll — click to follow playback"}
+          onClick={() => setFollow((f) => !f)}
+        >
+          Follow
+        </button>
         <button className="rel-close" title="Close" onClick={onClose}>×</button>
       </header>
       <div className="rel-filters">
@@ -401,7 +439,11 @@ export default function ReplayEventLog({
           </button>
         ))}
       </div>
-      <div className="rel-list" ref={listRef}>
+      <div
+        className="rel-list"
+        ref={listRef}
+        onWheel={() => follow && setFollow(false)}
+      >
         {rows}
       </div>
     </div>

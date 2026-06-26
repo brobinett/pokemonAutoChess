@@ -11,7 +11,7 @@ import type { ReplayRoom } from "../../../game/replay-room"
 import "./replay-ui.css"
 
 // Overlay controls for the replay viewer: play/pause, scrub, speed (0.5–8×), skip-by-phase/stage, a
-// phase-colored timeline with event markers, frame-step, and copy-link. Polls the ReplayRoom (which
+// phase-colored timeline with event markers, and frame-step. Polls the ReplayRoom (which
 // owns playback timing) a few times a second
 // to reflect its state. Styled with the game's native classes (.my-container/.bubbly) so it reads as
 // part of the UI, and draggable (position persisted) so the viewer can move it off the shop.
@@ -49,7 +49,6 @@ export default function ReplayControls({
   onRestart,
   onStepForward,
   onStepBackward,
-  onCopyLink,
   eventLogOpen,
   onToggleEventLog
 }: {
@@ -60,7 +59,6 @@ export default function ReplayControls({
   onRestart: () => void
   onStepForward: () => void
   onStepBackward: () => void
-  onCopyLink: () => Promise<boolean>
   eventLogOpen: boolean
   onToggleEventLog: () => void
 }) {
@@ -70,7 +68,6 @@ export default function ReplayControls({
     return () => clearInterval(id)
   }, [])
 
-  const [copied, setCopied] = useState(false)
   // Scrubber hover preview: the re-based time + stage·phase at the cursor, shown before you commit a
   // seek — seeking reboots, so aiming first is worth it. Index data only, no render. xPct positions the
   // tooltip + guide line along the track.
@@ -189,13 +186,6 @@ export default function ReplayControls({
     setHover({ xPct, ms: base + (xPct / 100) * span })
   }
 
-  const copy = async () => {
-    if (await onCopyLink()) {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1200)
-    }
-  }
-
   return (
     <div ref={barRef} className="replay-controls my-container" style={posStyle}>
       <span className="rc-handle" title="Drag to move" onMouseDown={onHandleDown}>
@@ -272,23 +262,21 @@ export default function ReplayControls({
         })}
         <div className="rc-fill" style={{ width: `${pct}%` }} />
         <div className="rc-playhead" style={{ left: `${pct}%` }} />
-        {/* Stage/phase boundary ticks (stage-starts emphasized), click-to-seek. stopPropagation so a
-            marker click jumps to that boundary exactly, not the coarse track click. */}
-        {index?.segments.map((s, i) => {
-          const isStageStart = index.stages.some((st) => st.t === s.t)
-          return (
-            <button
-              key={`seg-${i}`}
-              className={`rc-mark${isStageStart ? " stage" : ""}`}
-              style={{ left: `${frac(s.t) * 100}%` }}
-              title={`Stage ${s.stage} · ${s.phaseLabel}  (${fmt(s.t - base)})`}
-              onClick={(e) => {
-                e.stopPropagation()
-                onSeek(s.t)
-              }}
-            />
-          )
-        })}
+        {/* Stage-start ticks only — the per-phase ticks were visual clutter. Click-to-seek to the stage;
+            finer seeking is the hover tooltip + the ‹ › ⏮ ⏭ skip buttons. stopPropagation so the tick
+            jumps to the boundary exactly, not the coarse track click. */}
+        {index?.stages.map((st, i) => (
+          <button
+            key={`stage-${i}`}
+            className="rc-mark stage"
+            style={{ left: `${frac(st.t) * 100}%` }}
+            title={`Stage ${st.stage}  (${fmt(st.t - base)})`}
+            onClick={(e) => {
+              e.stopPropagation()
+              onSeek(st.t)
+            }}
+          />
+        ))}
         {hover && <div className="rc-hover-line" style={{ left: `${hover.xPct}%` }} />}
       </div>
         {hover &&
@@ -305,6 +293,11 @@ export default function ReplayControls({
               </div>
             )
           })()}
+        {/* Current position (stage · phase), sat under the timeline so it tracks the playhead in place
+            rather than floating at the far end of the bar. Doubles as the REPLAY / Replay-ended badge. */}
+        <div className={`rc-pos${room.ended ? " ended" : ""}`}>
+          {room.ended ? "Replay ended" : here ? `S${here.stage} · ${here.phaseLabel}` : "REPLAY"}
+        </div>
       </div>
 
       <span className="rc-time">{fmt(span)}</span>
@@ -321,10 +314,6 @@ export default function ReplayControls({
         ))}
       </div>
 
-      <button className={`bubbly rc-copy${copied ? " green" : ""}`} title="Copy a link to this moment (c)" onClick={copy}>
-        {copied ? "✓" : "🔗"}
-      </button>
-
       <button
         className={`bubbly rc-events${eventLogOpen ? " blue" : ""}`}
         title="Event log — the frames this replay is built from"
@@ -332,10 +321,6 @@ export default function ReplayControls({
       >
         ☰
       </button>
-
-      <span className={`rc-label${room.ended ? " ended" : ""}`}>
-        {room.ended ? "Replay ended" : here ? `S${here.stage} · ${here.phaseLabel}` : "REPLAY"}
-      </span>
     </div>
   )
 }

@@ -56,18 +56,24 @@
   text-align: center;
 }
 
-/* wraps the track so the hover tooltip can sit above it without being clipped by the track's overflow */
+/* wraps the track so the hover tooltip can sit above it without being clipped by the track's overflow.
+ * Column so the current-position chip (rc-pos) stacks directly under the timeline; the hover tip is
+ * anchored bottom:100% of the wrap, whose top edge is the track's top, so it still floats over the track. */
 .replay-controls .rc-track-wrap {
   position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
+  gap: 2px;
 }
 
+/* The bar docks between the gold and level displays, so it can't grow wider — readability comes from a
+ * THICKER track + a clear playhead instead. */
 .replay-controls .rc-track {
   position: relative;
-  width: 17vw;
-  min-width: 170px;
-  height: 0.8em;
+  width: 18vw;
+  min-width: 210px;
+  height: 14px;
   background: var(--color-bg-tertiary);
   border: var(--border-thin);
   border-radius: 7px;
@@ -141,15 +147,30 @@
 }
 /* .pick (prep) intentionally has no band — it reads as the base track colour. */
 
-/* Playhead: where we are now. */
+/* Playhead: where we are now — a bright gold line + a knob on top so it reads clearly against the
+ * red/blue phase bands (the plain 2px white line was easy to lose). */
 .replay-controls .rc-playhead {
   position: absolute;
-  top: -1px;
-  bottom: -1px;
-  width: 2px;
-  transform: translateX(-1px);
-  background: var(--color-fg-primary);
+  top: -2px;
+  bottom: -2px;
+  width: 3px;
+  transform: translateX(-1.5px);
+  background: var(--color-fg-gold);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
   pointer-events: none;
+  z-index: 6;
+}
+.replay-controls .rc-playhead::after {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-fg-gold);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
 }
 
 /* Timeline markers on the scrubber: thin phase ticks, taller/brighter stage starts. Each is a
@@ -180,12 +201,16 @@
 .replay-controls .rc-mark:hover::before {
   opacity: 1;
 }
+/* stage-start ticks: faint 1px dividers (the only markers now) — present but not cluttering */
 .replay-controls .rc-mark.stage::before {
-  width: 2px;
+  width: 1px;
   top: 0;
   bottom: 0;
   background: var(--color-fg-primary);
-  opacity: 0.85;
+  opacity: 0.3;
+}
+.replay-controls .rc-mark.stage:hover::before {
+  opacity: 0.75;
 }
 
 .replay-controls .rc-speeds {
@@ -199,20 +224,16 @@
   gap: 0.25em;
 }
 
-/* copy-link button; flashes green ✓ on success */
-.replay-controls .rc-copy {
-  min-width: 2.1em;
-}
-
-.replay-controls .rc-label {
-  letter-spacing: 1px;
+/* current stage·phase chip, docked under the timeline (doubles as the REPLAY / ended badge) */
+.replay-controls .rc-pos {
   font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.5px;
   color: var(--color-fg-secondary);
-  min-width: 5.2em;
-  text-align: right;
+  line-height: 1;
+  white-space: nowrap;
 }
-.replay-controls .rc-label.ended {
+.replay-controls .rc-pos.ended {
   color: var(--color-fg-gold);
 }
 

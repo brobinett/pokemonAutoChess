@@ -2,6 +2,9 @@ import { SchemaSerializer } from "@colyseus/sdk"
 import type { Iterator } from "@colyseus/schema"
 import type GameState from "../../../rooms/states/game-state"
 import { getPokemonData } from "../../../models/precomputed/precomputed-pokemon-data"
+import { getLevelUpCost } from "../../../models/colyseus-models/experience-manager"
+import { PVEStages } from "../../../models/pve-stages"
+import { BOARD_WIDTH } from "../../../config/game/board"
 import { SynergyTriggers } from "../../../config/game/synergies"
 import { BattleResult, GamePhaseState, PokemonActionState } from "../../../types/enum/Game"
 import { ItemRecipe } from "../../../types/enum/Item"
@@ -67,6 +70,7 @@ export type ReplayEventType =
   | "unequip" // an item returned from a board unit to player.items (benching removable items)
   | "move" // a board unit's (x,y) changed (deploy / bench / rearrange) — own "positioning" chip
   | "level"
+  | "xp" // bought experience (level-up cost gold → 4 XP) — OnLevelUpCommand
   | "pick"
 
 // Duplicate-aware diff of two string multisets (item/component lists): what was added / removed going
@@ -94,11 +98,19 @@ function evolvesTo(base: string, evolved: string): boolean {
   return d?.evolution === evolved || (d?.evolutions?.includes(evolved as Pkm) ?? false)
 }
 
-// Round outcome label. `name` is the opponent: a PvE round stores an i18n key like "pkm.MAGIKARP"
-// (prettify the species), a PvP round stores the player's display name (use as-is — prettifying would
-// mangle mixed-case names).
+// Every PvE opponent name a round can store (PVEStages[*].name) — both "pkm.<SPECIES>" and the
+// snake_case boss encounters ("tower_duo", "legendary_birds", …). Used to prettify those vs. leaving a
+// PvP display name untouched. Derived from source so a new PvE boss is covered without an edit here.
+const PVE_OPPONENT_NAMES = new Set<string>(Object.values(PVEStages).map((s) => s.name))
+
+// Round outcome label. `name` is the opponent: a PvE round stores an i18n key like "pkm.MAGIKARP" or a
+// boss key like "legendary_birds" (prettify both → "Magikarp" / "Legendary Birds"); a PvP round stores
+// the player's display name (use as-is — prettifying would mangle mixed-case names).
 function roundLabel(result: string, name: string): string {
-  const opp = name?.startsWith("pkm.") ? prettyName(name.slice(4)) : name || "opponent"
+  let opp: string
+  if (name?.startsWith("pkm.")) opp = prettyName(name.slice(4))
+  else if (PVE_OPPONENT_NAMES.has(name)) opp = prettyName(name)
+  else opp = name || "opponent"
   if (result === BattleResult.WIN) return `Beat ${opp}`
   if (result === BattleResult.DEFEAT) return `Lost to ${opp}`
   return `Draw vs ${opp}`
@@ -123,6 +135,14 @@ export interface ReplayIndex {
   // The ABILITY / POKEMON_DAMAGE / POKEMON_HEAL payloads identify units by (simulationId, x, y), not
   // by id, so we look the tile up against the simulation positions decoded as of that frame.
   combatUnits: Record<number, { caster?: string; target?: string }>
+  // DIG message frames (own POV only) → the dig site resolved from POV state: the digging unit's board
+  // tile (x,y) and the hole depth AFTER this dig (groundHoles[(y-1)·BOARD_WIDTH+x] + 1, capped at 5).
+  // The DIG payload only carries { pokemonId, buriedItem }, so coordinate + depth come from the state.
+  digInfo: Record<number, { x: number; y: number; depth: number }>
+  // PLAYER_INCOME message frames (own POV) → the round-income breakdown derived from POV state, when it
+  // reconciles to the message total (base = total − interest − streak, base ≥ 0). Absent for combat/kill
+  // gold (same message type, won't reconcile) → the log shows just the total there.
+  incomeInfo: Record<number, { base: number; interest: number; streak: number }>
   // Message-frame indices that belong to ANOTHER player and must be hidden from this single-POV log.
   // DIG / COOK / SHOW_EMOTE are `room.broadcast` (every client receives them), so the POV capture
   // contains other players' digs/cooks/emotes; we resolve the owner (the digging/cooking unit's player,
@@ -159,6 +179,9 @@ const prettyProposition = (p: string): string =>
 function pickedOverLabel(chosen: string, alternatives: string[]): string {
   return alternatives.length ? `Picked ${chosen} over ${alternatives.join(", ")}` : `Picked ${chosen}`
 }
+
+// Signed gold delta with the in-game "g" unit, e.g. "+2g" / "-3g".
+const goldStr = (n: number): string => `${n > 0 ? "+" : ""}${n}g`
 
 // The full slate of a player.choices entry, snapshotted per frame so that when a choice is resolved
 // (it leaves player.choices the frame the player picks) we can recover the options that were offered.
@@ -206,6 +229,21 @@ function playerOwningUnit(state: GameState, unitId: string): string | undefined 
   return owner
 }
 
+// Where the POV's own dig landed, for the "Dug (x,y) to depth N" label. The DIG payload only names the
+// digging unit (pokemonId); the hole is at that unit's board tile, and groundHoles indexes the board by
+// (positionY-1)·BOARD_WIDTH+positionX (game-commands.ts dig handler). The depth is incremented in a
+// deferred clock.setTimeout AFTER the broadcast, so at this frame groundHoles[index] is the PRE-dig
+// depth → the post-dig depth is min(it+1, 5) (Ground caps holes at 5; a dig only fires below max).
+function digSite(state: GameState, uid: string, unitId: string): { x: number; y: number; depth: number } | undefined {
+  const unit = (state.players?.get(uid) as { board?: { get?: (id: string) => { positionX?: number; positionY?: number } } } | undefined)?.board?.get?.(unitId)
+  if (!unit || unit.positionX == null || unit.positionY == null) return undefined
+  const x = unit.positionX
+  const y = unit.positionY
+  const holes = (state.players?.get(uid) as { groundHoles?: ArrayLike<number> } | undefined)?.groundHoles
+  const before = holes ? holes[(y - 1) * BOARD_WIDTH + x] ?? 0 : 0
+  return { x, y, depth: Math.min(before + 1, 5) }
+}
+
 export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): ReplayIndex {
   const ser = new SchemaSerializer<GameState>()
   let hasState = false
@@ -216,6 +254,8 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   const events: ReplayEvent[] = [] // eliminations only (scrubber markers + log)
   const actions: ReplayEvent[] = [] // POV reroll/buy/sell/level/pick (log only)
   const combatUnits: Record<number, { caster?: string; target?: string }> = {}
+  const digInfo: Record<number, { x: number; y: number; depth: number }> = {} // POV digs → tile + depth
+  const incomeInfo: Record<number, { base: number; interest: number; streak: number }> = {} // round income
   const foreignFrames: number[] = [] // non-POV DIG/COOK/SHOW_EMOTE message frames (room.broadcast leak)
 
   let prevPhase: number | undefined
@@ -224,6 +264,9 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   const lifePrev = new Map<string, number>()
   const eliminated = new Set<string>()
 
+  // A PLAYER_INCOME message awaiting its breakdown (resolved on the next PICK-phase state frame, when
+  // this round's interest/streak have been patched in). { idx: message frame, total: the gold amount }.
+  let pendingIncome: { idx: number; total: number } | null = null
   // POV-player snapshots for the action derivation (money/level/shop/board/proposition-choices).
   let povMoney: number | undefined
   let povLevel: number | undefined
@@ -272,7 +315,20 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           const pid = (f.payload as { pokemonId?: string })?.pokemonId
           const owner = pid ? playerOwningUnit(ser.getState(), pid) : undefined
           if (owner && owner !== viewerUid) foreignFrames.push(i)
+          else if (f.type === "DIG" && pid && (!owner || owner === viewerUid)) {
+            const site = digSite(ser.getState(), viewerUid, pid)
+            if (site) digInfo[i] = site
+          }
         }
+      }
+      // Round-income breakdown: PLAYER_INCOME (a POV-only client.send) carries just the total, but the
+      // regular round income = base(5 + red scales) + interest + win-streak bonus (computeIncome). We
+      // back out base = total − interest − streak, but the message arrives a frame or two BEFORE the
+      // state patch that updates this round's interest/streak — so we DEFER the breakdown to the next
+      // PICK-phase state frame (when they've landed). Stash it; the state loop resolves it below.
+      if (hasState && viewerUid && f.type === "PLAYER_INCOME") {
+        const total = typeof f.payload === "number" ? f.payload : (f.payload as { value?: number })?.value
+        if (typeof total === "number") pendingIncome = { idx: i, total }
       }
       continue
     }
@@ -320,6 +376,20 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     // POV-player actions, derived by diffing the recording player's own state frame-to-frame.
     const pov = viewerUid ? state.players?.get(viewerUid) : undefined
     if (pov) {
+      // Resolve a deferred round-income breakdown now that this PICK frame's interest/streak have landed.
+      // base = total − interest − streak (= 5 + red scales, always ≥ 0 for a real round income). The
+      // PICK-phase gate rejects combat/kill gold (same PLAYER_INCOME message, sent during FIGHT) → it
+      // falls back to the plain total. We resolve only at PICK so the values are this round's, not stale.
+      if (pendingIncome && ph === GamePhaseState.PICK) {
+        const interest = typeof pov.interest === "number" ? pov.interest : 0
+        const streak = Math.min(typeof pov.streak === "number" ? pov.streak : 0, 5)
+        const base = pendingIncome.total - interest - streak
+        // The real base is always 5 + 5·(red scales) — a positive multiple of 5. Show the breakdown only
+        // when it works out to that, which also rejects the rare frame where a loss-round streak reset
+        // hasn't been patched in yet (base would come out 2–4) → that income falls back to the plain total.
+        if (base >= 5 && base % 5 === 0) incomeInfo[pendingIncome.idx] = { base, interest, streak }
+        pendingIncome = null
+      }
       const money = pov.money
       const level = pov.experienceManager?.level
       const shop = pov.shop ? Array.from(pov.shop as ArrayLike<string>) : []
@@ -351,9 +421,13 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         : []
       const items = pov.items ? Array.from(pov.items as ArrayLike<string>) : []
       const historyLen = pov.history?.length ?? 0
+      // Set by the board branch when a combined pokemon+item proposition is picked (the item is shown
+      // inline in the "Pokemon (Item)" pick label); the item branch then consumes it without re-logging.
+      let combinedPickItem: string | null = null
 
       if (povBoard && povShop) {
         const dMoney = typeof money === "number" && typeof povMoney === "number" ? money - povMoney : 0
+        const levelUpCost = getLevelUpCost(state.specialGameRule)
         const added = [...board].filter(([id]) => !povBoard!.has(id))
         const removed = [...povBoard].filter(([id]) => !board.has(id))
         const choiceResolved = resolved.length > 0
@@ -369,14 +443,22 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         let pokePickLabel: string | null = null
         if (pokeSlate) {
           const addedNames = new Set(added.map(([, n]) => n))
-          const chosen = pokeSlate.pokemons.find((p) =>
+          const chosenIdx = pokeSlate.pokemons.findIndex((p) =>
             propositionConstituents(p).some((c) => addedNames.has(c))
           )
-          if (chosen) {
-            pokePickLabel = pickedOverLabel(
-              prettyProposition(chosen),
-              pokeSlate.pokemons.filter((p) => p !== chosen).map(prettyProposition)
-            )
+          if (chosenIdx >= 0) {
+            // addPick / unique-carousel slates pair a component with each pokemon (PlayerChoice.items[i]
+            // ↔ pokemons[i]); render those as "Pokemon (Item)" per option and remember the chosen item so
+            // the item-diff classification below doesn't double-log it. Pokemon-only slates (starter /
+            // legendary) have no items → just the names.
+            const withItems = pokeSlate.items.length > 0
+            const opt = (i: number) => {
+              const item = withItems && pokeSlate.items[i] ? ` (${prettyName(pokeSlate.items[i])})` : ""
+              return `${prettyProposition(pokeSlate.pokemons[i])}${item}`
+            }
+            const alts = pokeSlate.pokemons.map((_, i) => i).filter((i) => i !== chosenIdx).map(opt)
+            pokePickLabel = alts.length ? `Picked ${opt(chosenIdx)} over ${alts.join(", ")}` : `Picked ${opt(chosenIdx)}`
+            if (withItems && pokeSlate.items[chosenIdx]) combinedPickItem = pokeSlate.items[chosenIdx]
           }
         }
         // Board changed this frame? A buy always does `player.board.set` (the bought unit lands on the
@@ -404,7 +486,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         if (added.length && removed.length) {
           if (removed.some(([, n]) => n === Pkm.EGG)) {
             // an egg was consumed and a pokemon appeared → it hatched
-            actions.push({ t: f.t, type: "hatch", label: `Egg → ${prettyName(added[0][1])}` })
+            actions.push({ t: f.t, type: "hatch", label: `Hatched ${prettyName(added[0][1])}` })
           } else {
             let pair: [string, string] | undefined
             for (const [, ev] of added) {
@@ -431,7 +513,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         if (emptied.length) {
           const kind = boardChanged ? "buy" : "remove"
           emptied.forEach((name) =>
-            actions.push({ t: f.t, type: kind, label: `${prettyName(name)}${kind === "buy" && emptied.length === 1 && dMoney < 0 ? ` (${dMoney})` : ""}` })
+            actions.push({ t: f.t, type: kind, label: `${prettyName(name)}${kind === "buy" && emptied.length === 1 && dMoney < 0 ? ` (${goldStr(dMoney)})` : ""}` })
           )
         } else if (choiceResolved && added.length) {
           actions.push({ t: f.t, type: "pick", label: pokePickLabel ?? `Picked ${prettyName(added[0][1])}` })
@@ -440,15 +522,25 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           // mode-independent (catches FREE_MARKET 0-gold sells). Eliminations don't clear the board
           // (units are released to the pool but kept), so this can't fire on cleanup; the ≤3 cap and
           // alive guard are belt-and-suspenders. Gold shown only when it changed.
-          actions.push({ t: f.t, type: "sell", label: `${prettyName(removed[0][1])}${dMoney > 0 ? ` (+${dMoney})` : ""}` })
+          actions.push({ t: f.t, type: "sell", label: `${prettyName(removed[0][1])}${dMoney > 0 ? ` (${goldStr(dMoney)})` : ""}` })
         } else if (!boardChanged && refreshed >= REROLL_MIN_REFRESHED_SLOTS) {
-          actions.push({ t: f.t, type: "reroll", label: dMoney < 0 ? `${dMoney} gold` : "free roll" })
+          // Player-paid reroll (gold spent) vs the automatic free refresh at the start of each stage.
+          actions.push({ t: f.t, type: "reroll", label: dMoney < 0 ? `Reroll (${goldStr(dMoney)})` : "Shop refresh" })
+        } else if (dMoney === -levelUpCost && !boardChanged && emptied.length === 0 && refreshed === 0) {
+          // Bought experience (OnLevelUpCommand: −levelUpCost gold, +4 XP) — the only spend that touches
+          // neither the board nor the shop. A buy-XP that levels up also emits the level event below.
+          actions.push({ t: f.t, type: "xp", label: `Bought 4 XP (${goldStr(dMoney)})` })
         } else if (added.length && !removed.length) {
           // A unit appeared on the bench with no buy/pick/evolution behind it: Baby synergy egg, Water
           // synergy fish (spawnOnBench sets action=FISH), or some other free gain (wanderer catch, reward).
           for (const [id, name] of added) {
             if (name === Pkm.EGG) {
-              actions.push({ t: f.t, type: "egg", label: "Egg laid" })
+              // The egg names what it will hatch into (egg.evolution, set at lay time — createRandomEgg)
+              // and whether it's a golden/shiny egg (egg.shiny). Both are synced @type fields.
+              const egg = pov.board.get(id) as { evolution?: string; shiny?: boolean } | undefined
+              const hatch = egg?.evolution && egg.evolution !== Pkm.DEFAULT ? prettyName(egg.evolution) : ""
+              const golden = egg?.shiny ? "golden " : ""
+              actions.push({ t: f.t, type: "egg", label: hatch ? `Laid ${golden}${hatch} egg` : "Laid an egg" })
             } else if (pov.board.get(id)?.action === PokemonActionState.FISH) {
               actions.push({ t: f.t, type: "fish", label: `Fished ${prettyName(name)}` })
             } else {
@@ -523,14 +615,22 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         //    go to player.fairyWands, not player.items, so they don't surface here — out of scope.)
         const itemSlate = resolved.find((s) => s.items.length > 0)
         if (itemSlate) {
-          const chosen = itemSlate.items.find((it) => pAdded.includes(it))
-          if (chosen) {
-            takeStr(pAdded, chosen)
-            actions.push({
-              t: f.t,
-              type: "pick",
-              label: pickedOverLabel(prettyName(chosen), itemSlate.items.filter((it) => it !== chosen).map(prettyName))
-            })
+          if (itemSlate.pokemons.length > 0) {
+            // Combined pokemon+item proposition: the picked pokemon AND its paired item were already
+            // logged as one "Pokemon (Item)" line in the board branch. Just consume the picked item from
+            // the gain diff so it isn't re-logged as a separate pick or a bare "Got X".
+            const chosen = combinedPickItem ?? itemSlate.items.find((it) => pAdded.includes(it))
+            if (chosen) takeStr(pAdded, chosen)
+          } else {
+            const chosen = itemSlate.items.find((it) => pAdded.includes(it))
+            if (chosen) {
+              takeStr(pAdded, chosen)
+              actions.push({
+                t: f.t,
+                type: "pick",
+                label: pickedOverLabel(prettyName(chosen), itemSlate.items.filter((it) => it !== chosen).map(prettyName))
+              })
+            }
           }
         }
 
@@ -720,6 +820,8 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     events: events.sort((a, b) => a.t - b.t),
     actions: actions.sort((a, b) => a.t - b.t),
     combatUnits,
+    digInfo,
+    incomeInfo,
     foreignFrames
   }
 }

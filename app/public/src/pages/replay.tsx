@@ -288,23 +288,6 @@ export default function Replay() {
     seekTo(prevT)
   }
 
-  // Copy a deep link to the current moment (?startMs=…). With a served recording (?file=…) the link
-  // reopens the exact same point — the killer feature for bug-repro ("watch from here"). Returns
-  // whether the clipboard write succeeded so the button can flash "Copied!".
-  const copyLink = async (): Promise<boolean> => {
-    const room = replayRoom.current
-    if (!room) return false
-    const url = new URL(window.location.href)
-    url.searchParams.set("startMs", String(Math.round(room.currentMs)))
-    url.searchParams.set("speed", String(room.getSpeed()))
-    try {
-      await navigator.clipboard.writeText(url.toString())
-      return true
-    } catch {
-      return false
-    }
-  }
-
   const SPEEDS = [0.5, 1, 2, 4]
   const cycleSpeed = (dir: number) => {
     const room = replayRoom.current
@@ -359,10 +342,6 @@ export default function Replay() {
           break
         case ",":
           stepBackward()
-          break
-        case "c":
-        case "C":
-          void copyLink()
           break
         default:
           handled = false
@@ -535,7 +514,6 @@ export default function Replay() {
           onRestart={restart}
           onStepForward={stepForward}
           onStepBackward={stepBackward}
-          onCopyLink={copyLink}
           eventLogOpen={eventLogOpen}
           onToggleEventLog={() => setEventLogOpen((o) => !o)}
         />

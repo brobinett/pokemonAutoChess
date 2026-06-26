@@ -34,6 +34,26 @@
 }
 .rel-title { font-weight: bold; }
 .rel-count { margin-left: auto; opacity: 0.6; min-width: 2.5em; text-align: right; }
+/* follow-playhead toggle: dim when scrolling freely, accented when locked to the playhead */
+.rel-follow {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  color: var(--color-fg-secondary, #c9c3b6);
+  cursor: pointer;
+  font-size: 0.92em;
+  line-height: 1.4;
+  padding: 1px 8px;
+  opacity: 0.6;
+  white-space: nowrap;
+}
+.rel-follow:hover { opacity: 0.85; }
+.rel-follow.on {
+  opacity: 1;
+  color: #1a1a1a;
+  background: #8fd0ff;
+  border-color: transparent;
+}
 .rel-close {
   background: none;
   border: none;
