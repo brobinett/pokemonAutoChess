@@ -2,7 +2,8 @@ import { SchemaSerializer } from "@colyseus/sdk"
 import type { Iterator } from "@colyseus/schema"
 import type GameState from "../../../rooms/states/game-state"
 import { getPokemonData } from "../../../models/precomputed/precomputed-pokemon-data"
-import { GamePhaseState, PokemonActionState } from "../../../types/enum/Game"
+import { BattleResult, GamePhaseState, PokemonActionState } from "../../../types/enum/Game"
+import { ItemRecipe } from "../../../types/enum/Item"
 import { Pkm } from "../../../types/enum/Pokemon"
 import type { ReplayFrame } from "./replay-room"
 
@@ -52,6 +53,9 @@ export type ReplayEventType =
   | "egg" // Baby synergy laid an egg
   | "fish" // Water synergy fished a pokemon onto the bench
   | "gained" // a unit appeared on the bench from some other effect (wanderer catch, reward…)
+  | "round" // a fight resolved → win / loss / draw vs the opponent (player.history)
+  | "item" // an item entered player.items (pve reward, town, synergy grant, ability, dig…)
+  | "craft" // two components combined into a completed item (player.items, via ItemRecipe)
   | "level"
   | "pick"
 
@@ -60,6 +64,16 @@ export type ReplayEventType =
 function evolvesTo(base: string, evolved: string): boolean {
   const d = getPokemonData(base as Pkm)
   return d?.evolution === evolved || (d?.evolutions?.includes(evolved as Pkm) ?? false)
+}
+
+// Round outcome label. `name` is the opponent: a PvE round stores an i18n key like "pkm.MAGIKARP"
+// (prettify the species), a PvP round stores the player's display name (use as-is — prettifying would
+// mangle mixed-case names).
+function roundLabel(result: string, name: string): string {
+  const opp = name?.startsWith("pkm.") ? prettyName(name.slice(4)) : name || "opponent"
+  if (result === BattleResult.WIN) return `Beat ${opp}`
+  if (result === BattleResult.DEFEAT) return `Lost to ${opp}`
+  return `Draw vs ${opp}`
 }
 export interface ReplayEvent {
   t: number // absolute ms
@@ -150,6 +164,8 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   let povShop: string[] | undefined
   let povBoard: Map<string, string> | undefined // unit id → name
   let povChoices: Set<string> | undefined // choice ids currently offered
+  let povHistoryLen: number | undefined // length of player.history (each new entry = a round result)
+  let povItems: string[] | undefined // player.items (bench items; multiset — duplicates matter)
 
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i]
@@ -218,6 +234,8 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       pov.board?.forEach((u, id) => board.set(id, u.name))
       const choices = new Set<string>()
       pov.choices?.forEach((c) => choices.add(c.id))
+      const items = pov.items ? Array.from(pov.items as ArrayLike<string>) : []
+      const historyLen = pov.history?.length ?? 0
 
       if (povBoard && povShop) {
         const dMoney = typeof money === "number" && typeof povMoney === "number" ? money - povMoney : 0
@@ -305,11 +323,57 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           actions.push({ t: f.t, type: "level", label: `→ ${level}` })
         }
       }
+
+      // Round results — each new player.history entry is a resolved fight (win/loss/draw vs opponent).
+      if (povHistoryLen !== undefined && pov.history && historyLen > povHistoryLen) {
+        for (let h = povHistoryLen; h < historyLen; h++) {
+          const hi = pov.history.at(h)
+          if (hi) actions.push({ t: f.t, type: "round", label: roundLabel(hi.result, hi.name) })
+        }
+      }
+
+      // Item changes (player.items multiset diff): a craft (2 components → 1 result via ItemRecipe), else
+      // an item gained. Sources of "gained" are many (pve/town rewards, synergy grants, abilities, dig,
+      // harvest…); the diff catches them all. (Removals — equip onto a unit / unequip return — are not
+      // yet split out; that needs per-unit pokemon.items tracking — a follow-up.)
+      if (povItems !== undefined) {
+        const count = (arr: string[]) => {
+          const m = new Map<string, number>()
+          for (const x of arr) m.set(x, (m.get(x) ?? 0) + 1)
+          return m
+        }
+        const prevC = count(povItems)
+        const curC = count(items)
+        const added: string[] = []
+        const removed: string[] = []
+        curC.forEach((n, k) => { for (let j = 0; j < n - (prevC.get(k) ?? 0); j++) added.push(k) })
+        prevC.forEach((n, k) => { for (let j = 0; j < n - (curC.get(k) ?? 0); j++) removed.push(k) })
+        // crafts first, consuming their components+result from the pools so they aren't double-counted
+        for (let a = added.length - 1; a >= 0; a--) {
+          const recipe = ItemRecipe[added[a] as keyof typeof ItemRecipe]
+          if (recipe && recipe.length === 2) {
+            const pool = [...removed]
+            const i0 = pool.indexOf(recipe[0])
+            if (i0 >= 0) pool.splice(i0, 1)
+            const i1 = i0 >= 0 ? pool.indexOf(recipe[1]) : -1
+            if (i0 >= 0 && i1 >= 0) {
+              actions.push({ t: f.t, type: "craft", label: `${prettyName(recipe[0])} + ${prettyName(recipe[1])} → ${prettyName(added[a])}` })
+              removed.splice(removed.indexOf(recipe[0]), 1)
+              removed.splice(removed.indexOf(recipe[1]), 1)
+              added.splice(a, 1)
+            }
+          }
+        }
+        for (const x of added) actions.push({ t: f.t, type: "item", label: `Got ${prettyName(x)}` })
+      }
+
       povMoney = money
       povLevel = level
       povShop = shop
       povBoard = board
       povChoices = choices
+      povHistoryLen = historyLen
+      povItems = items
     }
   }
 

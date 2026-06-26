@@ -34,7 +34,7 @@ const DEFAULT_RIGHT = "6vw"
 // ReplayRoom already holds, plus the shared useDraggable hook the game's other windows use — no effect
 // on live play. The panel is draggable (by its header) and resizable (CSS resize handle).
 
-type Category = "combat" | "economy" | "flow" | "synergy" | "flavor" | "engine"
+type Category = "combat" | "economy" | "items" | "flow" | "synergy" | "flavor" | "engine"
 
 // Server→client message type → category. The full set was traced from the game source (every
 // broadcast / client.send / broadcastToSpectators reachable inside a game room). Unmapped types fall
@@ -73,6 +73,7 @@ const CATEGORY_OF: Record<string, Category> = {
 const CATEGORIES: { key: Category; label: string }[] = [
   { key: "combat", label: "Combat" },
   { key: "economy", label: "Economy" },
+  { key: "items", label: "Items" },
   { key: "flow", label: "Match flow" },
   { key: "synergy", label: "Synergy" },
   { key: "flavor", label: "Flavor" },
@@ -82,6 +83,7 @@ const CATEGORIES: { key: Category; label: string }[] = [
 const DEFAULT_ON: Record<Category, boolean> = {
   combat: true,
   economy: true,
+  items: true,
   flow: true,
   synergy: true,
   flavor: true,
@@ -89,9 +91,12 @@ const DEFAULT_ON: Record<Category, boolean> = {
 }
 
 // Derived POV-action types (from replay-index) → category. Defaults to economy (shop/board management);
-// synergy-driven bench gains and proposition picks are routed explicitly.
+// items, synergy-driven bench gains, proposition picks, and round results are routed explicitly.
 const ACTION_CAT: Record<string, Category> = {
   pick: "flow",
+  round: "flow",
+  item: "items",
+  craft: "items",
   egg: "synergy",
   fish: "synergy",
   hatch: "synergy"

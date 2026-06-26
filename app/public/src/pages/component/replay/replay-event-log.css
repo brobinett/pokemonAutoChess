@@ -72,6 +72,7 @@
 /* per-category accent (applied to the row type text always; to the chip fill when on) */
 .rel-chip-combat.on { background: #ff9a8f; }
 .rel-chip-economy.on { background: #ffd479; }
+.rel-chip-items.on { background: #e0a368; }
 .rel-chip-flow.on { background: #8fd0ff; }
 .rel-chip-synergy.on { background: #9be08f; }
 .rel-chip-flavor.on { background: #c9a3ff; }
@@ -107,6 +108,7 @@
 /* per-category accent on the row type text */
 .rel-cat-combat .rel-type { color: #ff9a8f; }
 .rel-cat-economy .rel-type { color: #ffd479; }
+.rel-cat-items .rel-type { color: #e0a368; }
 .rel-cat-flow .rel-type { color: #8fd0ff; }
 .rel-cat-synergy .rel-type { color: #9be08f; }
 .rel-cat-flavor .rel-type { color: #c9a3ff; }
