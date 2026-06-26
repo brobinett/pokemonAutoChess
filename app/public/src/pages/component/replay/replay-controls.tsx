@@ -5,7 +5,6 @@ import {
   prevPhase,
   prevStage,
   segmentAt,
-  type ReplayEvent,
   type ReplayIndex
 } from "../../../game/replay-index"
 import type { ReplayRoom } from "../../../game/replay-room"
@@ -71,10 +70,10 @@ export default function ReplayControls({
   }, [])
 
   const [copied, setCopied] = useState(false)
-  // Scrubber hover preview: what's at the cursor (re-based time + stage·phase, or the nearest event)
-  // shown before you commit a seek — seeking reboots, so aiming first is worth it. Index data only,
-  // no render. xPct positions the tooltip + guide line along the track.
-  const [hover, setHover] = useState<{ xPct: number; ms: number; event: ReplayEvent | null } | null>(null)
+  // Scrubber hover preview: the re-based time + stage·phase at the cursor, shown before you commit a
+  // seek — seeking reboots, so aiming first is worth it. Index data only, no render. xPct positions the
+  // tooltip + guide line along the track.
+  const [hover, setHover] = useState<{ xPct: number; ms: number } | null>(null)
 
   // Draggable position. null → default dock just above the shop (between the shop and the bench).
   const barRef = useRef<HTMLDivElement>(null)
@@ -173,23 +172,11 @@ export default function ReplayControls({
   // one 150ms poll cycle (the render-time `targets` below would still hold the pre-first-click jump).
   const go = (fn: (i: ReplayIndex, ms: number) => number | null) => index && skip(fn(index, navMs()))
 
-  // Track hover → preview the moment under the cursor; snap to a nearby event marker if close.
+  // Track hover → preview the moment (time + stage·phase) under the cursor.
   const onTrackHover = (e: React.MouseEvent) => {
     const r = e.currentTarget.getBoundingClientRect()
-    const cx = e.clientX - r.left
-    const xPct = clamp((cx / r.width) * 100, 0, 100)
-    let near: ReplayEvent | null = null
-    if (index?.events.length) {
-      let best = 10 // px: snap the preview to an event marker within this distance of the cursor
-      for (const ev of index.events) {
-        const d = Math.abs(frac(ev.t) * r.width - cx)
-        if (d < best) {
-          best = d
-          near = ev
-        }
-      }
-    }
-    setHover({ xPct, ms: base + (xPct / 100) * span, event: near })
+    const xPct = clamp(((e.clientX - r.left) / r.width) * 100, 0, 100)
+    setHover({ xPct, ms: base + (xPct / 100) * span })
   }
 
   const copy = async () => {
@@ -275,8 +262,8 @@ export default function ReplayControls({
         })}
         <div className="rc-fill" style={{ width: `${pct}%` }} />
         <div className="rc-playhead" style={{ left: `${pct}%` }} />
-        {/* Stage/phase boundary ticks (stage-starts emphasized) + elimination markers, click-to-seek.
-            stopPropagation so a marker click jumps to that boundary exactly, not the coarse track click. */}
+        {/* Stage/phase boundary ticks (stage-starts emphasized), click-to-seek. stopPropagation so a
+            marker click jumps to that boundary exactly, not the coarse track click. */}
         {index?.segments.map((s, i) => {
           const isStageStart = index.stages.some((st) => st.t === s.t)
           return (
@@ -292,18 +279,6 @@ export default function ReplayControls({
             />
           )
         })}
-        {index?.events.map((ev, i) => (
-          <button
-            key={`ev-${i}`}
-            className={`rc-mark ${ev.type}`}
-            style={{ left: `${frac(ev.t) * 100}%` }}
-            title={`${ev.label}  (${fmt(ev.t - base)})`}
-            onClick={(e) => {
-              e.stopPropagation()
-              onSeek(ev.t)
-            }}
-          />
-        ))}
         {hover && <div className="rc-hover-line" style={{ left: `${hover.xPct}%` }} />}
       </div>
         {hover &&
@@ -312,9 +287,7 @@ export default function ReplayControls({
             return (
               <div className="rc-hover-tip" style={{ left: `${clamp(hover.xPct, 7, 93)}%` }}>
                 <span className="rc-hover-time">{fmt(hover.ms - base)}</span>
-                {hover.event ? (
-                  <span className="rc-hover-evt">{hover.event.label}</span>
-                ) : seg ? (
+                {seg ? (
                   <span className={`rc-hover-seg ${seg.phaseLabel.toLowerCase()}`}>
                     S{seg.stage} · {seg.phaseLabel}
                   </span>

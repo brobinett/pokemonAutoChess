@@ -118,10 +118,6 @@
 .replay-controls .rc-hover-seg.town {
   color: var(--color-fg-accent);
 }
-.replay-controls .rc-hover-evt {
-  font-weight: 700;
-  color: var(--color-fg-red);
-}
 /* Played-region overlay: translucent so the phase bands beneath stay visible. */
 .replay-controls .rc-fill {
   position: absolute;
@@ -156,9 +152,9 @@
   pointer-events: none;
 }
 
-/* Timeline markers on the scrubber: thin phase ticks, taller/brighter stage starts, red
- * eliminations. Each is a click-to-seek button with a wider-than-visible hit area (the button spans
- * a few px; the visible line is a centered ::before) so they're easy to grab. */
+/* Timeline markers on the scrubber: thin phase ticks, taller/brighter stage starts. Each is a
+ * click-to-seek button with a wider-than-visible hit area (the button spans a few px; the visible
+ * line is a centered ::before) so they're easy to grab. */
 .replay-controls .rc-mark {
   position: absolute;
   top: 0;
@@ -190,13 +186,6 @@
   bottom: 0;
   background: var(--color-fg-primary);
   opacity: 0.85;
-}
-.replay-controls .rc-mark.elimination::before {
-  width: 3px;
-  top: 0;
-  bottom: 0;
-  background: var(--color-fg-red);
-  opacity: 1;
 }
 
 .replay-controls .rc-speeds {
