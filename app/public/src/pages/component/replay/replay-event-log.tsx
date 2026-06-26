@@ -159,7 +159,14 @@ function summarize(type: string, payload: unknown, names?: { caster?: string; ta
         const tgt = names?.target ? prettyName(names.target) : `(${o?.x},${o?.y})`
         return `${src ? prettyName(src) : "?"} +${o?.amount ?? "?"}${o?.type === 0 ? " shield" : ""} → ${tgt}`
       }
-      case "DISPLAY_TEXT": { const o = p as { text?: string }; return String(o?.text ?? "") }
+      case "DISPLAY_TEXT": {
+        // DisplayText (app/types/strings/DisplayText.ts) is either `ability.<ABILITY>` (a big ability
+        // cast, e.g. Mimic/Metronome copies) or a snake_case status ("belly_full", "full"…). Strip the
+        // "ability." prefix; prettyName title-cases the rest either way → "Meteor Mash" / "Belly Full".
+        const o = p as { text?: string }
+        const t = String(o?.text ?? "")
+        return prettyName(t.startsWith("ability.") ? t.slice("ability.".length) : t)
+      }
       case "PLAYER_DAMAGE": return `${typeof p === "number" ? p : (p as { value?: number })?.value ?? "?"} life lost`
       case "PLAYER_INCOME": return `+${typeof p === "number" ? p : (p as { value?: number })?.value ?? "?"} gold`
       case "FINAL_RANK": return `placed #${typeof p === "number" ? p : (p as { value?: number })?.value ?? "?"}`
