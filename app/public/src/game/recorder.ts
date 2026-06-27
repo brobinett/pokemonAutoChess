@@ -8,6 +8,7 @@ import {
   storedInfo,
   type StoredFrame
 } from "./recorder-store"
+import { encodeReplayV1 } from "./replay-format"
 import type { ReplayManifest } from "./replay-room"
 
 // In-client match recorder. Taps the live client's own inbound Colyseus stream — the exact same seam
@@ -254,6 +255,8 @@ export async function buildReplay(
   await flushRoom(room) // persist the last in-memory frames before reading
   const all = await loadFrames(room.roomId)
   const t0 = all.length ? all[0].t : 0
+  // Carry the raw bytes natively (no base64) — `encodeReplayV1` writes them straight into the v1 binary
+  // at download. This is what deletes the old whole-match bytesToB64 + JSON.stringify render-thread spike.
   const frames = all.map((f) =>
     f.kind === "message"
       ? {
@@ -266,12 +269,12 @@ export async function buildReplay(
           t: f.t - t0,
           kind: f.kind,
           offset: f.offset,
-          b64: bytesToB64(f.bytes!)
+          bytes: f.bytes
         }
   )
   return {
-    format: "colreplay-v0",
-    schemaVersion: 0,
+    format: "colreplay-v1",
+    schemaVersion: 1,
     game: { ...GAME_BUILD },
     room: "game",
     viewerUid,
@@ -280,16 +283,16 @@ export async function buildReplay(
   }
 }
 
-/** Build the replay and trigger a browser download. */
+/** Build the replay and trigger a browser download of the v1 binary `.colreplay`. */
 export async function downloadReplay(room: Room, viewerUid: string) {
   const manifest = await buildReplay(room, viewerUid)
-  const blob = new Blob([JSON.stringify(manifest)], {
-    type: "application/json"
+  const blob = new Blob([encodeReplayV1(manifest)], {
+    type: "application/octet-stream"
   })
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
   a.href = url
-  a.download = `replay-${manifest.recordedAt.replace(/[:.]/g, "-")}.colreplay.json`
+  a.download = `replay-${manifest.recordedAt.replace(/[:.]/g, "-")}.colreplay`
   document.body.appendChild(a)
   a.click()
   a.remove()

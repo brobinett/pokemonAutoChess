@@ -28,7 +28,8 @@ const b64ToBytes = (b64: string): Uint8Array =>
 
 // ── byte writer / reader ────────────────────────────────────────────────────────────────────────────
 class ByteWriter {
-  private buf = new Uint8Array(4096)
+  // ArrayBuffer-backed (not ArrayBufferLike) so `done()` returns a value that is a valid Blob/BufferSource
+  private buf: Uint8Array<ArrayBuffer> = new Uint8Array(4096)
   private len = 0
   private ensure(n: number) {
     if (this.len + n <= this.buf.length) return
@@ -64,7 +65,7 @@ class ByteWriter {
     this.buf.set(u8, this.len)
     this.len += u8.length
   }
-  done(): Uint8Array {
+  done(): Uint8Array<ArrayBuffer> {
     return this.buf.subarray(0, this.len)
   }
 }
@@ -106,7 +107,7 @@ const te = new TextEncoder()
 const td = new TextDecoder()
 
 // ── encode: a manifest (raw v0 or normalized) → v1 binary (used by the recorder's export, Step 4) ─────
-export function encodeReplayV1(manifest: ReplayManifest): Uint8Array {
+export function encodeReplayV1(manifest: ReplayManifest): Uint8Array<ArrayBuffer> {
   const w = new ByteWriter()
   for (const c of MAGIC) w.u8(c)
   w.u8(CONTAINER_V1)
