@@ -53,7 +53,21 @@ export function createRecorderWorker(deps: WorkerDeps) {
       current = null
     }
     const handle = await deps.openHandle(roomId)
-    current = { roomId, handle, writer: new ReplayFileWriter(handle, { meta }) }
+    let writer: ReplayFileWriter
+    try {
+      // The constructor writes the header synchronously; if that first write throws (IO/quota), close the
+      // just-opened exclusive sync handle so we don't leak the lock on `${roomId}.colreplay` (the next
+      // ensureOpen's createSyncAccessHandle would otherwise throw NoModificationAllowedError forever).
+      writer = new ReplayFileWriter(handle, { meta })
+    } catch (e) {
+      try {
+        handle.close()
+      } catch {
+        // ignore
+      }
+      throw e
+    }
+    current = { roomId, handle, writer }
     if (deps.prune) await deps.prune(KEEP_RECENT, roomId)
   }
 
@@ -73,11 +87,16 @@ export function createRecorderWorker(deps: WorkerDeps) {
           deps.post({ type: "downloaded", id: msg.id, error: "no recording for room" })
           return
         }
-        current.writer.flush()
-        const size = current.writer.size
-        const buf = new Uint8Array(size)
-        current.handle.read(buf, { at: 0 })
-        deps.post({ type: "downloaded", id: msg.id, buf: buf.buffer, bytes: size }, [buf.buffer])
+        // ALWAYS reply (even on a flush/read failure) so the main-thread download promise can't hang forever.
+        try {
+          current.writer.flush()
+          const size = current.writer.size
+          const buf = new Uint8Array(size)
+          current.handle.read(buf, { at: 0 })
+          deps.post({ type: "downloaded", id: msg.id, buf: buf.buffer, bytes: size }, [buf.buffer])
+        } catch (e) {
+          deps.post({ type: "downloaded", id: msg.id, error: String((e as Error)?.message ?? e) })
+        }
         break
       }
       case "close":

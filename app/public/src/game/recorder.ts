@@ -86,7 +86,13 @@ function getWorker(): Worker {
         }
       }
     }
-    worker.onerror = (e) => console.error("[recorder] worker error", e.message)
+    worker.onerror = (e) => {
+      console.error("[recorder] worker error", e.message)
+      // Fail any in-flight download so its button surfaces an error instead of hanging forever (e.g. the
+      // worker script 404s in a deploy, or it throws fatally).
+      for (const cb of pendingDownloads.values()) cb({ error: `recording worker error: ${e.message}` })
+      pendingDownloads.clear()
+    }
   }
   return worker
 }
@@ -176,14 +182,12 @@ const push = (
   arr.push(frame)
 }
 
+// A ROOM_DATA_BYTES payload is a Uint8Array the SDK may reuse, so COPY it (slice) and pass the bytes
+// straight through — the worker's encoder stores them as ENC_BYTES. (The old path base64'd here and
+// un-base64'd in the worker, a round-trip that only undid itself and violated "the render thread never
+// base64s".) Other payloads pass as-is; postMessage structured-clones them to the worker.
 const serializePayload = (m: unknown): unknown =>
-  m instanceof Uint8Array ? { __bytes__: bytesToB64(m) } : m
-
-function bytesToB64(u8: Uint8Array): string {
-  let s = ""
-  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i])
-  return btoa(s)
-}
+  m instanceof Uint8Array ? m.slice() : m
 
 // Only the game room is ever downloaded, so don't buffer frames for the lobby/preparation/after rooms —
 // their continuous state patches + chat messages would otherwise pile up in memory while a player idles.

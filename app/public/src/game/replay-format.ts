@@ -101,6 +101,9 @@ class ByteReader {
   get eof(): boolean {
     return this.pos >= this.u8.length
   }
+  get length(): number {
+    return this.u8.length
+  }
 }
 
 const te = new TextEncoder()
@@ -152,11 +155,21 @@ export function encodeFrameV1(frame: ReplayFrame, prevT: number | null): { bytes
 // Shared per-frame writer — both encodeReplayV1 and the streaming encodeFrameV1 use it, so the one-shot
 // and incremental paths are byte-identical by construction (proven in replay/verify-stream-encode.mjs).
 function writeFrame(w: ByteWriter, f: ReplayFrame, prevT: number): number {
+  if (!(f.kind in KIND)) throw new Error(`encodeReplayV1: unknown frame kind "${f.kind}"`)
   const kind = KIND[f.kind]
   w.u8(kind)
   const t = f.t ?? 0
-  const dt = t - prevT
-  if (dt < 0) throw new Error(`encodeReplayV1: non-monotonic t (dt=${dt})`)
+  let dt = t - prevT
+  let nextPrevT = t
+  // The live recorder stamps t = Date.now() (non-monotonic). A backward clock step would make dt < 0;
+  // don't throw (that aborts the worker's flush batch and loses those frames) — clamp the gap to 0 and pin
+  // to prevT so the timeline can't go backward and the next delta is measured from the last good time.
+  // Rebased one-shot manifests are monotonic, so this never fires there (byte output unchanged).
+  if (dt < 0) {
+    console.warn(`[colreplay] non-monotonic frame t (dt=${dt}); clamping to 0`)
+    dt = 0
+    nextPrevT = prevT
+  }
   w.varint(dt)
   if (kind === KIND.message) {
     if (typeof f.type === "number") {
@@ -187,7 +200,7 @@ function writeFrame(w: ByteWriter, f: ReplayFrame, prevT: number): number {
     w.varint(b.length)
     w.bytes(b)
   }
-  return t
+  return nextPrevT
 }
 
 function messagePayload(payload: unknown): unknown {
@@ -210,24 +223,39 @@ export function decodeReplayV1(bytes: Uint8Array): ReplayManifest {
 
   const frames: ReplayFrame[] = []
   let prevT = 0
-  while (!r.eof) {
-    const kind = r.u8r()
-    const t = prevT + r.varint()
-    prevT = t
-    if (kind === KIND.message) {
-      const typeTag = r.u8r()
-      const type = typeTag === 0 ? r.varint() : td.decode(r.bytes(r.varint()))
-      const enc = r.u8r()
-      let payload: unknown
-      if (enc === ENC_NONE) payload = undefined
-      else if (enc === ENC_BYTES) payload = r.bytes(r.varint())
-      else payload = unpack(r.bytes(r.varint()))
-      frames.push({ t, kind: "message", type, payload })
-    } else {
-      const offset = r.varint()
-      const len = r.varint()
-      frames.push({ t, kind: KIND_NAME[kind], offset, bytes: r.bytes(len) })
+  // Recover the valid PREFIX of a truncated/corrupt file (a recording cut off by a crash mid-write) rather
+  // than throwing it all away: parse a frame into a local and only push it if it parsed fully (the cursor
+  // stayed in bounds); on a short read or bad kind/payload, warn and stop with what was read so far.
+  while (r.pos < r.length) {
+    const frameStart = r.pos
+    let frame: ReplayFrame
+    let t: number
+    try {
+      const kind = r.u8r()
+      t = prevT + r.varint()
+      if (kind === KIND.message) {
+        const typeTag = r.u8r()
+        const type = typeTag === 0 ? r.varint() : td.decode(r.bytes(r.varint()))
+        const enc = r.u8r()
+        let payload: unknown
+        if (enc === ENC_NONE) payload = undefined
+        else if (enc === ENC_BYTES) payload = r.bytes(r.varint())
+        else payload = unpack(r.bytes(r.varint()))
+        frame = { t, kind: "message", type, payload }
+      } else {
+        const kindName = KIND_NAME[kind]
+        if (kindName === undefined) throw new Error(`unknown frame kind byte ${kind}`)
+        const offset = r.varint()
+        const len = r.varint()
+        frame = { t, kind: kindName, offset, bytes: r.bytes(len) }
+      }
+      if (r.pos > r.length) throw new Error("frame extends past end of file")
+    } catch (e) {
+      console.warn(`[colreplay] decode stopped at a truncated/corrupt frame @${frameStart} (recovered ${frames.length} frames): ${(e as Error).message}`)
+      break
     }
+    prevT = t
+    frames.push(frame)
   }
   return { ...meta, frames }
 }
