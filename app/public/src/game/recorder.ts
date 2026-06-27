@@ -1,6 +1,7 @@
 import { Room, SchemaSerializer } from "@colyseus/sdk"
 import { rooms } from "../network"
 import store from "../stores"
+import { type CapturedFrame, createFlushController } from "./recorder-flush-core"
 import type { ReplayWriterMeta } from "./opfs-replay-writer"
 import type { ReplayFrame } from "./replay-room"
 
@@ -15,16 +16,6 @@ import type { ReplayFrame } from "./replay-room"
 //
 // Privacy is automatic: the client only ever received its own @view-scoped state, so a recording
 // can't contain another player's hidden information (shop, etc.).
-
-interface CapturedFrame {
-  t: number
-  seq: number
-  kind: "handshake" | "state" | "patch" | "message"
-  offset?: number
-  bytes?: Uint8Array
-  type?: string | number
-  payload?: unknown
-}
 
 const stateCaptures = new WeakMap<object, CapturedFrame[]>() // serializer instance -> frames
 const msgCaptures = new WeakMap<object, CapturedFrame[]>() // room instance -> message frames
@@ -44,7 +35,9 @@ export function getActiveGameRoom(): Room | null {
 // the download is offered, so the durable IndexedDB copy is what remains. Without this the last game's
 // frames linger in memory until a new game overwrites the ref (or forever while idling in lobby).
 export function resetActiveGameRoom() {
+  const roomId = lastGameRoom?.roomId ?? rooms.game?.roomId
   lastGameRoom = null
+  if (roomId) controller.forget(roomId) // drop the finished game's in-flight/tally state
   // Past the after-game download → tell the worker to flush + release the OPFS handle. The file stays on
   // disk (re-openable on a future reconnect to the same roomId); only the exclusive sync handle is freed.
   worker?.postMessage({ type: "close" })
@@ -84,6 +77,10 @@ function getWorker(): Worker {
           pendingDownloads.delete(m.id)
           cb(m)
         }
+      } else if (m?.type === "ack") {
+        controller.onAck(m.roomId, m.batchId) // batch durably on OPFS → free its frames
+      } else if (m?.type === "nack") {
+        controller.onNack(m.roomId, m.batchId, m.error) // write failed → keep + resend
       }
     }
     worker.onerror = (e) => {
@@ -92,24 +89,10 @@ function getWorker(): Worker {
       // worker script 404s in a deploy, or it throws fatally).
       for (const cb of pendingDownloads.values()) cb({ error: `recording worker error: ${e.message}` })
       pendingDownloads.clear()
+      controller.onWorkerError() // unblock any awaiting flush so the flush chain can't hang
     }
   }
   return worker
-}
-
-// Per-room running summary for the after-game indicator (the OPFS file is the source of truth for the
-// DOWNLOAD; this is only the count/span shown on the button). recordedAt is stamped once, at first flush.
-const tally = new Map<
-  string,
-  { frames: number; firstT: number; lastT: number; recordedAt: string }
->()
-function ensureTally(roomId: string) {
-  let t = tally.get(roomId)
-  if (!t) {
-    t = { frames: 0, firstT: 0, lastT: 0, recordedAt: new Date().toISOString() }
-    tally.set(roomId, t)
-  }
-  return t
 }
 
 const toReplayFrame = (f: CapturedFrame): ReplayFrame =>
@@ -117,59 +100,43 @@ const toReplayFrame = (f: CapturedFrame): ReplayFrame =>
     ? { t: f.t, kind: "message", type: f.type, payload: f.payload }
     : { t: f.t, kind: f.kind, offset: f.offset, bytes: f.bytes }
 
-// Flushes MUST be serialized so per-frame order (and the worker's prevT threading) is preserved and the
-// same un-spliced prefix is never sent twice. We chain every flush through a single promise.
-let flushChain: Promise<void> = Promise.resolve()
+// The no-loss flush state machine (ack-before-splice; see recorder-flush-core.ts). We inject the live
+// capture buffers, the worker postMessage, and the meta/frame builders; the controller owns the in-flight
+// bookkeeping and the tally. The worker's ack/nack messages are routed to it from worker.onmessage above.
+const controller = createFlushController({
+  buffers(roomId) {
+    // Only the active game room is ever flushed, so resolve via the retained game-room ref. The taps key
+    // buffers by serializer/room object identity, so on ack the controller splices the exact arrays here.
+    const room = getActiveGameRoom()
+    if (!room || room.roomId !== roomId) return {}
+    const ser = (room as unknown as { serializer?: object }).serializer
+    return {
+      state: ser ? stateCaptures.get(ser) : undefined,
+      msg: msgCaptures.get(room)
+    }
+  },
+  meta(_roomId, recordedAt): ReplayWriterMeta {
+    return {
+      game: { ...GAME_BUILD },
+      room: "game",
+      viewerUid: store.getState().network.uid,
+      recordedAt
+    }
+  },
+  postFrames(msg) {
+    // NO transfer: the frame buffers must stay valid in memory in case a write fails and the batch is
+    // resent (the cost of the no-loss guarantee — postMessage structured-clones the bytes instead).
+    getWorker().postMessage(msg)
+  },
+  toFrame: toReplayFrame,
+  now: () => new Date().toISOString()
+})
 
-/** Send the active game's newly-captured frames to the recording worker. Serialized (see flushChain);
- * returns once this flush AND any already-queued ones have completed, so the download can await it. */
+/** Send the active game's newly-captured frames to the recording worker. Resolves once the batch is acked
+ * (durably on OPFS) or nacked; serialized inside the controller. A no-op for non-game / replay rooms. */
 export function flushRoom(room: Room | null): Promise<void> {
-  flushChain = flushChain
-    .then(() => flushRoomImpl(room))
-    .catch((e) => console.error("[recorder] flush failed", e))
-  return flushChain
-}
-
-/** Drain the un-flushed prefix of `room`'s in-memory buffers to the worker (which appends them to OPFS),
- * then trim what was sent. Skips the replay room — watching a replay re-runs the taps and we don't record
- * replays. Never call directly; go through flushRoom so flushes stay serialized. */
-async function flushRoomImpl(room: Room | null): Promise<void> {
-  if (!room || room.roomId === "replay") return
-  const ser = (room as unknown as { serializer: object }).serializer
-  const sAll = stateCaptures.get(ser)
-  const mAll = msgCaptures.get(room)
-  const sLen = sAll?.length ?? 0
-  const mLen = mAll?.length ?? 0
-  if (sLen + mLen === 0) return
-  const batch = [
-    ...(sAll ?? []).slice(0, sLen),
-    ...(mAll ?? []).slice(0, mLen)
-  ].sort((a, b) => a.seq - b.seq)
-  const frames = batch.map(toReplayFrame)
-
-  const t = ensureTally(room.roomId)
-  if (t.frames === 0 && frames.length) t.firstT = frames[0].t
-  const meta: ReplayWriterMeta = {
-    game: { ...GAME_BUILD },
-    room: "game",
-    viewerUid: store.getState().network.uid,
-    recordedAt: t.recordedAt
-  }
-
-  // Transfer each state frame's ArrayBuffer (zero-copy). These are private bytes.slice() copies, so the
-  // live decode is unaffected, and they're spliced out below — the neutered buffers are discarded.
-  const transfer: Transferable[] = []
-  for (const f of frames) if (f.bytes) transfer.push(f.bytes.buffer)
-  getWorker().postMessage(
-    { type: "frames", roomId: room.roomId, meta, frames },
-    transfer
-  )
-
-  t.frames += frames.length
-  if (frames.length) t.lastT = frames[frames.length - 1].t
-
-  sAll?.splice(0, sLen) // frames captured during the postMessage remain for the next flush
-  mAll?.splice(0, mLen)
+  if (!room || room.roomId === "replay") return Promise.resolve()
+  return controller.flush(room.roomId)
 }
 
 const push = (
@@ -278,15 +245,15 @@ export function installRecorder() {
   setInterval(() => void flushRoom(getActiveGameRoom()), FLUSH_MS)
 }
 
-/** Recording summary (frame count + span) for the after-game indicator. From the in-memory tally — the
- * OPFS file is the source of truth for the actual download. (After a crash + reload the tally only counts
- * post-reconnect frames, so the indicator may undercount; the DOWNLOAD still reads the whole OPFS file.) */
+/** Recording summary (durably-acked frame count + span) for the after-game indicator. From the controller's
+ * tally — the OPFS file is the source of truth for the actual download. (After a crash + reload the tally
+ * only counts post-reconnect frames, so the indicator may undercount; the DOWNLOAD still reads the whole
+ * OPFS file.) */
 export async function getStoredCaptureInfo(
   room: Room | undefined
 ): Promise<{ frames: number; ms: number }> {
   if (!room || room.roomId === "replay") return { frames: 0, ms: 0 }
-  const t = tally.get(room.roomId)
-  return t ? { frames: t.frames, ms: Math.max(0, t.lastT - t.firstT) } : { frames: 0, ms: 0 }
+  return controller.captureInfo(room.roomId)
 }
 
 /** Flush the in-memory tail, then ask the worker to flush + return the assembled OPFS file, and trigger a
@@ -298,7 +265,7 @@ export async function downloadReplay(
   _viewerUid: string
 ): Promise<void> {
   if (!room || room.roomId === "replay") return
-  await flushRoom(room) // persist the last in-memory frames before reading
+  await controller.drain(room.roomId) // persist + ack every captured frame before reading the file
   const id = ++downloadSeq
   const buf = await new Promise<ArrayBuffer>((resolve, reject) => {
     pendingDownloads.set(id, (r) =>
@@ -309,8 +276,7 @@ export async function downloadReplay(
     getWorker().postMessage({ type: "download", roomId: room.roomId, id })
   })
   const blob = new Blob([buf], { type: "application/octet-stream" })
-  const recordedAt =
-    tally.get(room.roomId)?.recordedAt ?? new Date().toISOString()
+  const recordedAt = controller.recordedAt(room.roomId) ?? new Date().toISOString()
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
   a.href = url

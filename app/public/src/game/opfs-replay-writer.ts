@@ -22,6 +22,9 @@ export interface ReplayFileHandle {
   flush(): void
   /** Release the (exclusive) handle. */
   close(): void
+  /** Shrink the file back to `newSize` bytes — used to roll back a failed batch write so the file is never
+   *  left with a half-written record. Optional: FileSystemSyncAccessHandle has it; older fakes may not. */
+  truncate?(newSize: number): void
 }
 
 export type ReplayWriterMeta = Pick<ReplayManifest, "game" | "room" | "viewerUid" | "recordedAt">
@@ -61,9 +64,60 @@ export class ReplayFileWriter {
     this.framesWritten++
   }
 
-  /** Append a batch (e.g. a flush of buffered frames) in order. */
+  /** Append a batch of frames as a SINGLE atomic write. Encode the whole batch into one buffer (threading
+   *  tDelta), write it once at the running offset, then advance. If the write throws (OPFS quota/IO) or
+   *  comes up short, roll the file back to its pre-batch size and rethrow — so the batch is either fully on
+   *  disk or not at all. The recorder relies on this for its no-loss guarantee: a caller that gets the
+   *  rejection can safely resend the SAME batch without risking a half-written duplicate on disk. */
   appendFrames(frames: ReplayFrame[]): void {
-    for (const f of frames) this.appendFrame(f)
+    if (frames.length === 0) return
+    const startOffset = this.offset
+    const startPrevT = this.prevT
+    // Encode every frame first (threading prevT) and concatenate, so the actual disk write is one call.
+    // This is byte-identical to writing each frame separately (verify-stream-encode proves incremental ==
+    // one-shot), but the OS write is now all-or-nothing.
+    let prevT = this.prevT
+    let total = 0
+    const parts: Uint8Array[] = []
+    for (const f of frames) {
+      const { bytes, t } = encodeFrameV1(f, prevT)
+      parts.push(bytes)
+      total += bytes.length
+      prevT = t
+    }
+    const buf = new Uint8Array(total)
+    let at = 0
+    for (const p of parts) {
+      buf.set(p, at)
+      at += p.length
+    }
+
+    let written: number
+    try {
+      written = this.handle.write(buf, { at: startOffset })
+    } catch (e) {
+      this.rollback(startOffset, startPrevT)
+      throw e
+    }
+    if (written !== buf.length) {
+      this.rollback(startOffset, startPrevT)
+      throw new Error(`ReplayFileWriter: short write ${written}/${buf.length} B`)
+    }
+    this.offset = startOffset + buf.length
+    this.prevT = prevT
+    this.framesWritten += frames.length
+  }
+
+  /** Undo a failed batch: truncate the file back to its pre-batch size (best effort) and restore the
+   *  running offset + prevT so the next write resumes cleanly. */
+  private rollback(offset: number, prevT: number | null): void {
+    try {
+      this.handle.truncate?.(offset)
+    } catch (e) {
+      console.error("[colreplay] rollback truncate failed", e)
+    }
+    this.offset = offset
+    this.prevT = prevT
   }
 
   flush(): void {

@@ -30,6 +30,20 @@ const core = createRecorderWorker({
     const h = await (fh as unknown as { createSyncAccessHandle(): Promise<ReplayReadWriteHandle> }).createSyncAccessHandle()
     return h as ReplayReadWriteHandle
   },
+  async readFile(roomId): Promise<Uint8Array | null> {
+    // Read-only whole-file read for a download of a NON-active file (e.g. after a reload, before the first
+    // post-reconnect flush reopened it). getFile() doesn't need the exclusive sync handle, so it works on a
+    // file we aren't currently writing. Returns null if the recording isn't on disk.
+    const dir = await replaysDir()
+    let fh: FileSystemFileHandle
+    try {
+      fh = await dir.getFileHandle(`${roomId}.colreplay`, { create: false })
+    } catch {
+      return null
+    }
+    const file = await fh.getFile()
+    return new Uint8Array(await file.arrayBuffer())
+  },
   async prune(keep, protect) {
     const dir = await replaysDir()
     const entries: { name: string; mtime: number }[] = []
