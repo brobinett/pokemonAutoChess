@@ -109,6 +109,21 @@ const td = new TextDecoder()
 // ── encode: a manifest (raw v0 or normalized) → v1 binary (used by the recorder's export, Step 4) ─────
 export function encodeReplayV1(manifest: ReplayManifest): Uint8Array<ArrayBuffer> {
   const w = new ByteWriter()
+  w.bytes(encodeHeaderV1(manifest))
+  let prevT = 0 // rebased manifests open at t=0, so the first frame's tDelta is 0
+  for (const f of manifest.frames) prevT = writeFrame(w, f, prevT)
+  return w.done()
+}
+
+/** The fixed file prefix: magic + version + length-prefixed metadata JSON. The OPFS worker writes this
+ * ONCE at open, then appends frame records (encodeFrameV1). */
+export function encodeHeaderV1(manifest: {
+  game: ReplayManifest["game"]
+  room: string
+  viewerUid: string
+  recordedAt: string
+}): Uint8Array<ArrayBuffer> {
+  const w = new ByteWriter()
   for (const c of MAGIC) w.u8(c)
   w.u8(CONTAINER_V1)
   const meta = {
@@ -122,47 +137,57 @@ export function encodeReplayV1(manifest: ReplayManifest): Uint8Array<ArrayBuffer
   const metaBytes = te.encode(JSON.stringify(meta))
   w.u32(metaBytes.length)
   w.bytes(metaBytes)
-
-  let prevT = 0
-  for (const f of manifest.frames) {
-    const kind = KIND[f.kind]
-    w.u8(kind)
-    const t = f.t ?? 0
-    const dt = t - prevT
-    if (dt < 0) throw new Error(`encodeReplayV1: non-monotonic t (dt=${dt})`)
-    w.varint(dt)
-    prevT = t
-    if (kind === KIND.message) {
-      if (typeof f.type === "number") {
-        w.u8(0)
-        w.varint(f.type)
-      } else {
-        w.u8(1)
-        const tb = te.encode(String(f.type))
-        w.varint(tb.length)
-        w.bytes(tb)
-      }
-      const p = messagePayload(f.payload)
-      if (p === undefined) {
-        w.u8(ENC_NONE)
-      } else if (p instanceof Uint8Array) {
-        w.u8(ENC_BYTES)
-        w.varint(p.length)
-        w.bytes(p)
-      } else {
-        w.u8(ENC_MSGPACK)
-        const pb = pack(p)
-        w.varint(pb.length)
-        w.bytes(pb)
-      }
-    } else {
-      w.varint(f.offset ?? 1)
-      const b = f.bytes ?? (f.b64 ? b64ToBytes(f.b64) : new Uint8Array(0))
-      w.varint(b.length)
-      w.bytes(b)
-    }
-  }
   return w.done()
+}
+
+/** Encode ONE frame record for streaming append. `prevT` = the previous frame's t; pass null for the
+ * first frame of a (re)opened file → tDelta 0 (a reconnect-after-reload segment continues from the file's
+ * accumulated time, collapsing the disconnect gap — dead time anyway). Returns this frame's t. */
+export function encodeFrameV1(frame: ReplayFrame, prevT: number | null): { bytes: Uint8Array<ArrayBuffer>; t: number } {
+  const w = new ByteWriter()
+  const t = writeFrame(w, frame, prevT == null ? (frame.t ?? 0) : prevT)
+  return { bytes: w.done(), t }
+}
+
+// Shared per-frame writer — both encodeReplayV1 and the streaming encodeFrameV1 use it, so the one-shot
+// and incremental paths are byte-identical by construction (proven in replay/verify-stream-encode.mjs).
+function writeFrame(w: ByteWriter, f: ReplayFrame, prevT: number): number {
+  const kind = KIND[f.kind]
+  w.u8(kind)
+  const t = f.t ?? 0
+  const dt = t - prevT
+  if (dt < 0) throw new Error(`encodeReplayV1: non-monotonic t (dt=${dt})`)
+  w.varint(dt)
+  if (kind === KIND.message) {
+    if (typeof f.type === "number") {
+      w.u8(0)
+      w.varint(f.type)
+    } else {
+      w.u8(1)
+      const tb = te.encode(String(f.type))
+      w.varint(tb.length)
+      w.bytes(tb)
+    }
+    const p = messagePayload(f.payload)
+    if (p === undefined) {
+      w.u8(ENC_NONE)
+    } else if (p instanceof Uint8Array) {
+      w.u8(ENC_BYTES)
+      w.varint(p.length)
+      w.bytes(p)
+    } else {
+      w.u8(ENC_MSGPACK)
+      const pb = pack(p)
+      w.varint(pb.length)
+      w.bytes(pb)
+    }
+  } else {
+    w.varint(f.offset ?? 1)
+    const b = f.bytes ?? (f.b64 ? b64ToBytes(f.b64) : new Uint8Array(0))
+    w.varint(b.length)
+    w.bytes(b)
+  }
+  return t
 }
 
 function messagePayload(payload: unknown): unknown {
