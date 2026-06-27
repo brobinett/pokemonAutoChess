@@ -265,6 +265,10 @@ export function installRecorder() {
     return origDispatch.call(this, type, message)
   }
 
+  // Ask the browser to persist OPFS storage so a recording isn't evicted under storage pressure mid-game
+  // (best effort; resolves false without throwing if not granted).
+  void navigator.storage?.persist?.().catch(() => {})
+
   // Periodically flush the active game's frames to the recording worker so a crash can't lose them. The
   // worker prunes old OPFS recordings itself when it opens a new game's file.
   setInterval(() => void flushRoom(getActiveGameRoom()), FLUSH_MS)
