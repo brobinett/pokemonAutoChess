@@ -19,10 +19,11 @@ export interface ReplayFrame {
   kind: "handshake" | "state" | "patch" | "message"
   // state frames (handshake/state/patch):
   offset?: number // decoder payload start within the frame bytes
-  b64?: string // base64 of the whole inbound message buffer
+  bytes?: Uint8Array // raw inbound buffer — v1 carries it natively; v0 carries `b64` instead (loader sniffs)
+  b64?: string // base64 of the whole inbound message buffer (v0 envelope only)
   // message frames (ROOM_DATA): a typed onMessage event
   type?: string | number
-  payload?: unknown // JSON value, or { __bytes__: base64 } for ROOM_DATA_BYTES
+  payload?: unknown // decoded JS value | Uint8Array (ROOM_DATA_BYTES) | { __bytes__: base64 } (v0 in-memory)
 }
 
 export interface ReplayManifest {
@@ -162,7 +163,7 @@ export class ReplayRoom {
       this.emitMessage(f.type!, this.decodePayload(f.payload))
       return
     }
-    const bytes = b64ToBytes(f.b64!)
+    const bytes = f.bytes ?? b64ToBytes(f.b64!) // v1 carries raw bytes; v0 decodes base64
     const it: Iterator = { offset: f.offset ?? 1 }
     if (f.kind === "handshake") this.serializer.handshake(bytes, it)
     else if (f.kind === "state") this.serializer.setState(bytes, it)

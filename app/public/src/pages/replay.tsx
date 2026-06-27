@@ -12,6 +12,7 @@ import {
   prevStage,
   type ReplayIndex
 } from "../game/replay-index"
+import { loadReplay } from "../game/replay-format"
 import { ReplayRoom, type ReplayManifest } from "../game/replay-room"
 import { useAppDispatch, useAppSelector } from "../hooks"
 import { rooms } from "../network"
@@ -367,9 +368,9 @@ export default function Replay() {
     fetch(file)
       .then((r) => {
         if (!r.ok) throw new Error(`failed to load ${file}: ${r.status}`)
-        return r.json()
+        return r.arrayBuffer() // bytes, not .json() — loadReplay sniffs v1-binary vs v0-JSON
       })
-      .then(loadManifest)
+      .then((buf) => loadManifest(loadReplay(buf)))
       .catch((e) => setError(String(e?.message ?? e)))
   }, [])
 
@@ -454,8 +455,8 @@ export default function Replay() {
 
   const pick = (f: File) =>
     f
-      .text()
-      .then((txt) => loadManifest(JSON.parse(txt) as ReplayManifest))
+      .arrayBuffer()
+      .then((buf) => loadManifest(loadReplay(buf)))
       .catch((e) => setError(String(e?.message ?? e)))
 
   if (error)

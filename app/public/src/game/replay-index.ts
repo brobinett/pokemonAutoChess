@@ -334,7 +334,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     }
 
     try {
-      const bytes = b64ToBytes(f.b64!)
+      const bytes = f.bytes ?? b64ToBytes(f.b64!) // v1 carries raw bytes; v0 decodes base64
       const it: Iterator = { offset: f.offset ?? 1 }
       if (f.kind === "handshake") ser.handshake(bytes, it)
       else if (f.kind === "state") {
