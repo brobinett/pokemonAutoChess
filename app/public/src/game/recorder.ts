@@ -1,15 +1,8 @@
 import { Room, SchemaSerializer } from "@colyseus/sdk"
 import { rooms } from "../network"
 import store from "../stores"
-import {
-  appendFrames,
-  loadFrames,
-  pruneToRecent,
-  storedInfo,
-  type StoredFrame
-} from "./recorder-store"
-import { encodeReplayV1 } from "./replay-format"
-import type { ReplayManifest } from "./replay-room"
+import type { ReplayWriterMeta } from "./opfs-replay-writer"
+import type { ReplayFrame } from "./replay-room"
 
 // In-client match recorder. Taps the live client's own inbound Colyseus stream — the exact same seam
 // the headless harness recorder uses (replay/record-match.mjs) — and lets the player download the
@@ -52,6 +45,9 @@ export function getActiveGameRoom(): Room | null {
 // frames linger in memory until a new game overwrites the ref (or forever while idling in lobby).
 export function resetActiveGameRoom() {
   lastGameRoom = null
+  // Past the after-game download → tell the worker to flush + release the OPFS handle. The file stays on
+  // disk (re-openable on a future reconnect to the same roomId); only the exclusive sync handle is freed.
+  worker?.postMessage({ type: "close" })
 }
 
 // The game build a recording was made in. TODO: source from a build-time constant once available.
@@ -61,37 +57,65 @@ const GAME_BUILD = {
   serializerId: "schema"
 }
 
-// --- durable flush (IndexedDB) -------------------------------------------------------------------
-// Frames live in memory only until flushed; a crash/reload wipes them, so the download after a
-// reconnect used to lose everything before the crash. We flush to IndexedDB ~1s at a time, keyed by
-// roomId — reconnect rejoins the same roomId, so the recording survives a crash. See recorder-store.ts.
+// --- durable flush (WebWorker + OPFS) ------------------------------------------------------------
+// Capture stays on the render thread (the taps must sit on the SDK prototypes), but file I/O does NOT:
+// every ~1s we postMessage the newly-captured frames to a dedicated worker (recorder.worker.ts) that
+// streams them into an OPFS `${roomId}.colreplay` via a ReplayFileWriter. OPFS is persistent, so it also
+// gives crash-durability — a reconnect (same roomId, even after a reload) reopens the same file and
+// appends. The render thread never base64s, JSON.stringifies, or touches IndexedDB; the per-frame
+// bytes.slice() copies are TRANSFERRED to the worker (zero-copy), not re-cloned.
 const FLUSH_MS = 1000
-// Keep only the current + previous recording. A past game isn't downloadable from the UI (only the
-// just-finished game's after-screen offers a download), so retaining more just wastes storage. At
-// ~2 KB/s a 35-min game is ~4-8 MB, so this bounds IndexedDB to ~tens of MB regardless of play volume.
-const KEEP_RECENT = 2
-let lastPrunedForRoom: string | null = null // re-prune when a NEW game starts (drops un-downloaded ones)
 
-const toStored =
-  (room: string) =>
-  (f: CapturedFrame): StoredFrame => ({
-    room,
-    t: f.t,
-    seq: f.seq,
-    kind: f.kind,
-    offset: f.offset,
-    bytes: f.bytes,
-    type: f.type,
-    payload: f.payload
-  })
+// --- the recording worker ---
+let worker: Worker | null = null
+let downloadSeq = 0
+const pendingDownloads = new Map<number, (r: { buf?: ArrayBuffer; error?: string }) => void>()
+function getWorker(): Worker {
+  if (!worker) {
+    // recorder.worker.ts is built as its own esbuild entry to app/public/dist/client/recorder.worker.js
+    // (served at /recorder.worker.js). A stable URL — not `new URL(..., import.meta.url)`, which esbuild
+    // leaves empty under the es2016 target. A classic (non-module) worker, so no ESM at runtime.
+    worker = new Worker("/recorder.worker.js")
+    worker.onmessage = (e: MessageEvent) => {
+      const m = e.data
+      if (m?.type === "downloaded") {
+        const cb = pendingDownloads.get(m.id)
+        if (cb) {
+          pendingDownloads.delete(m.id)
+          cb(m)
+        }
+      }
+    }
+    worker.onerror = (e) => console.error("[recorder] worker error", e.message)
+  }
+  return worker
+}
 
-// Flushes MUST be serialized: the 1s interval and the on-download flush (buildReplay) can otherwise
-// overlap, and a second flush would read the SAME un-spliced prefix — writing duplicate state/patch
-// frames (which the ReplayRoom would re-apply to the decoder → desync) and over-trimming the buffer.
-// We chain every flush through a single promise so they run strictly one at a time.
+// Per-room running summary for the after-game indicator (the OPFS file is the source of truth for the
+// DOWNLOAD; this is only the count/span shown on the button). recordedAt is stamped once, at first flush.
+const tally = new Map<
+  string,
+  { frames: number; firstT: number; lastT: number; recordedAt: string }
+>()
+function ensureTally(roomId: string) {
+  let t = tally.get(roomId)
+  if (!t) {
+    t = { frames: 0, firstT: 0, lastT: 0, recordedAt: new Date().toISOString() }
+    tally.set(roomId, t)
+  }
+  return t
+}
+
+const toReplayFrame = (f: CapturedFrame): ReplayFrame =>
+  f.kind === "message"
+    ? { t: f.t, kind: "message", type: f.type, payload: f.payload }
+    : { t: f.t, kind: f.kind, offset: f.offset, bytes: f.bytes }
+
+// Flushes MUST be serialized so per-frame order (and the worker's prevT threading) is preserved and the
+// same un-spliced prefix is never sent twice. We chain every flush through a single promise.
 let flushChain: Promise<void> = Promise.resolve()
 
-/** Persist the active game's newly-captured frames to durable storage. Serialized (see flushChain);
+/** Send the active game's newly-captured frames to the recording worker. Serialized (see flushChain);
  * returns once this flush AND any already-queued ones have completed, so the download can await it. */
 export function flushRoom(room: Room | null): Promise<void> {
   flushChain = flushChain
@@ -100,10 +124,9 @@ export function flushRoom(room: Room | null): Promise<void> {
   return flushChain
 }
 
-/** Persist the un-flushed prefix of `room`'s in-memory buffers, then trim what was persisted (memory
- * stays bounded for long games). Skips the replay room — watching a replay re-runs the serializer taps
- * and we don't record replays. On append failure nothing is trimmed → retried on the next flush. Never
- * call directly; go through flushRoom so flushes stay serialized. */
+/** Drain the un-flushed prefix of `room`'s in-memory buffers to the worker (which appends them to OPFS),
+ * then trim what was sent. Skips the replay room — watching a replay re-runs the taps and we don't record
+ * replays. Never call directly; go through flushRoom so flushes stay serialized. */
 async function flushRoomImpl(room: Room | null): Promise<void> {
   if (!room || room.roomId === "replay") return
   const ser = (room as unknown as { serializer: object }).serializer
@@ -112,21 +135,35 @@ async function flushRoomImpl(room: Room | null): Promise<void> {
   const sLen = sAll?.length ?? 0
   const mLen = mAll?.length ?? 0
   if (sLen + mLen === 0) return
-  const batch = [...(sAll ?? []).slice(0, sLen), ...(mAll ?? []).slice(0, mLen)]
-    .sort((a, b) => a.seq - b.seq)
-    .map(toStored(room.roomId))
-  await appendFrames(room.roomId, batch, {
+  const batch = [
+    ...(sAll ?? []).slice(0, sLen),
+    ...(mAll ?? []).slice(0, mLen)
+  ].sort((a, b) => a.seq - b.seq)
+  const frames = batch.map(toReplayFrame)
+
+  const t = ensureTally(room.roomId)
+  if (t.frames === 0 && frames.length) t.firstT = frames[0].t
+  const meta: ReplayWriterMeta = {
+    game: { ...GAME_BUILD },
+    room: "game",
     viewerUid: store.getState().network.uid,
-    version: GAME_BUILD.version
-  })
-  sAll?.splice(0, sLen) // frames captured during the async append remain for the next flush
-  mAll?.splice(0, mLen)
-  // When a NEW game starts (roomId changed since the last flush), drop all but the recent recordings so
-  // un-downloaded past games don't pile up; protect the active room so it's never pruned mid-record.
-  if (room.roomId !== lastPrunedForRoom) {
-    lastPrunedForRoom = room.roomId
-    void pruneToRecent(KEEP_RECENT, room.roomId).catch(() => {})
+    recordedAt: t.recordedAt
   }
+
+  // Transfer each state frame's ArrayBuffer (zero-copy). These are private bytes.slice() copies, so the
+  // live decode is unaffected, and they're spliced out below — the neutered buffers are discarded.
+  const transfer: Transferable[] = []
+  for (const f of frames) if (f.bytes) transfer.push(f.bytes.buffer)
+  getWorker().postMessage(
+    { type: "frames", roomId: room.roomId, meta, frames },
+    transfer
+  )
+
+  t.frames += frames.length
+  if (frames.length) t.lastT = frames[frames.length - 1].t
+
+  sAll?.splice(0, sLen) // frames captured during the postMessage remain for the next flush
+  mAll?.splice(0, mLen)
 }
 
 const push = (
@@ -228,71 +265,48 @@ export function installRecorder() {
     return origDispatch.call(this, type, message)
   }
 
-  // Periodically flush the active game's frames to durable storage so a crash can't lose them, and drop
-  // stale recordings on startup so IndexedDB doesn't grow without bound.
+  // Periodically flush the active game's frames to the recording worker so a crash can't lose them. The
+  // worker prunes old OPFS recordings itself when it opens a new game's file.
   setInterval(() => void flushRoom(getActiveGameRoom()), FLUSH_MS)
-  void pruneToRecent(KEEP_RECENT).catch(() => {})
 }
 
-/** Durable recording summary (frame count + span) for the after-game indicator. Reads the persisted
- * meta, so it reflects the WHOLE recording including anything captured before a crash + reconnect —
- * unlike the in-memory buffers, which only hold the current page's frames (and get trimmed on flush). */
+/** Recording summary (frame count + span) for the after-game indicator. From the in-memory tally — the
+ * OPFS file is the source of truth for the actual download. (After a crash + reload the tally only counts
+ * post-reconnect frames, so the indicator may undercount; the DOWNLOAD still reads the whole OPFS file.) */
 export async function getStoredCaptureInfo(
   room: Room | undefined
 ): Promise<{ frames: number; ms: number }> {
   if (!room || room.roomId === "replay") return { frames: 0, ms: 0 }
-  const { frames, ms } = await storedInfo(room.roomId)
-  return { frames, ms }
+  const t = tally.get(room.roomId)
+  return t ? { frames: t.frames, ms: Math.max(0, t.lastT - t.firstT) } : { frames: 0, ms: 0 }
 }
 
-/** Assemble a .colreplay manifest from the DURABLE capture for `room`. Flushes any in-memory tail
- * first, then reads every persisted frame (in arrival order) — so a recording that spanned a crash +
- * reconnect comes out whole. */
-export async function buildReplay(
+/** Flush the in-memory tail, then ask the worker to flush + return the assembled OPFS file, and trigger a
+ * browser download of the v1 binary `.colreplay`. The worker streamed the whole match (incl. anything
+ * captured before a crash + reconnect, since OPFS persists), so the file comes out whole with no
+ * main-thread encode. `_viewerUid` is unused (the worker already stamped viewerUid into the file). */
+export async function downloadReplay(
   room: Room,
-  viewerUid: string
-): Promise<ReplayManifest> {
+  _viewerUid: string
+): Promise<void> {
+  if (!room || room.roomId === "replay") return
   await flushRoom(room) // persist the last in-memory frames before reading
-  const all = await loadFrames(room.roomId)
-  const t0 = all.length ? all[0].t : 0
-  // Carry the raw bytes natively (no base64) — `encodeReplayV1` writes them straight into the v1 binary
-  // at download. This is what deletes the old whole-match bytesToB64 + JSON.stringify render-thread spike.
-  const frames = all.map((f) =>
-    f.kind === "message"
-      ? {
-          t: f.t - t0,
-          kind: "message" as const,
-          type: f.type,
-          payload: f.payload
-        }
-      : {
-          t: f.t - t0,
-          kind: f.kind,
-          offset: f.offset,
-          bytes: f.bytes
-        }
-  )
-  return {
-    format: "colreplay-v1",
-    schemaVersion: 1,
-    game: { ...GAME_BUILD },
-    room: "game",
-    viewerUid,
-    recordedAt: new Date().toISOString(),
-    frames
-  }
-}
-
-/** Build the replay and trigger a browser download of the v1 binary `.colreplay`. */
-export async function downloadReplay(room: Room, viewerUid: string) {
-  const manifest = await buildReplay(room, viewerUid)
-  const blob = new Blob([encodeReplayV1(manifest)], {
-    type: "application/octet-stream"
+  const id = ++downloadSeq
+  const buf = await new Promise<ArrayBuffer>((resolve, reject) => {
+    pendingDownloads.set(id, (r) =>
+      r.error || !r.buf
+        ? reject(new Error(r.error ?? "download failed"))
+        : resolve(r.buf)
+    )
+    getWorker().postMessage({ type: "download", roomId: room.roomId, id })
   })
+  const blob = new Blob([buf], { type: "application/octet-stream" })
+  const recordedAt =
+    tally.get(room.roomId)?.recordedAt ?? new Date().toISOString()
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
   a.href = url
-  a.download = `replay-${manifest.recordedAt.replace(/[:.]/g, "-")}.colreplay`
+  a.download = `replay-${recordedAt.replace(/[:.]/g, "-")}.colreplay`
   document.body.appendChild(a)
   a.click()
   a.remove()
