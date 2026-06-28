@@ -104,39 +104,6 @@ context({
     process.exit(1)
   })
 
-// Third entry: the replay-index WebWorker (replay-index.worker.ts) — buildReplayIndex off the main thread
-// so a long capture's multi-second index build doesn't freeze the load. Stable unhashed filename, spawned
-// from /replay-index.worker.js. Same iife/es2016 shape as the recorder worker; bundles replay-index +
-// @colyseus/sdk + the game enums. Watched in dev; one-shot in --build.
-context({
-  entryPoints: ["./app/public/src/game/replay-index.worker.ts"],
-  outfile: "app/public/dist/client/replay-index.worker.js",
-  bundle: true,
-  format: "iife",
-  target: "es2016",
-  minify: isProdBuild,
-  sourcemap: isProdBuild,
-  // replay-index pulls in game modules that reference process.env (player.ts MODE field initializer,
-  // i18n NODE_ENV); the main bundle defines the client env, and there's no `process` in a worker, so
-  // supply the same defines + MODE/NODE_ENV here to avoid a "process is not defined" crash on load.
-  define: {
-    ...clientEnvDefine,
-    "process.env.MODE": `"${process.env.MODE ?? "production"}"`,
-    "process.env.NODE_ENV": `"${process.env.NODE_ENV ?? "production"}"`
-  }
-})
-  .then((workerContext) => {
-    if (isDev) {
-      workerContext.watch()
-    } else {
-      workerContext.rebuild().then(() => workerContext.dispose())
-    }
-  })
-  .catch((error) => {
-    console.error(error)
-    process.exit(1)
-  })
-
 function updateHashedFilesInIndex() {
   //update hash in index.html
   const fs = require("fs")
