@@ -64,6 +64,7 @@ export type ReplayEventType =
   | "round" // a fight resolved → win / loss / draw vs the opponent (player.history)
   | "synergy" // a synergy tier activated/upgraded — player.synergies crossed a SynergyTriggers threshold
   | "town" // a town encounter NPC appeared (state.townEncounter — shared, game-level)
+  | "region" // the POV took a portal to a new region (player.map changed)
   | "item" // an item entered player.items with no unit losing it (pve reward, town, synergy, dig…)
   | "craft" // components combined into a completed item (player.items bench-combine OR onto a unit)
   | "equip" // an item left player.items and landed on a board unit
@@ -161,6 +162,25 @@ export function prettyName(v: string | undefined | null): string {
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ")
 }
+
+// DungeonPMDO values (player.map) are PascalCase with trailing digits ("AmpPlains", "BuriedRelic1",
+// "DarkIceMountainPeak"); render them as the game's region label by splitting on case/letter-digit
+// boundaries — exactly what the `t("map.<value>")` English strings are ("Amp Plains", "Buried Relic 1").
+// Derived from the value, so no i18n dep (matching these English event labels; i18n is a later pass).
+// The split matches the locale for all but 6 legacy keys the locale renames — the *Unused* maps are
+// live portal destinations under PMDO names (see CLAUDE.md) plus WorldAbyss2 → "World Abyss"; override
+// those to their player-facing `map.*` strings so all 143 maps match what the game shows.
+const REGION_NAME_OVERRIDES: Record<string, string> = {
+  QuicksandUnused: "Lost Quicksand",
+  TemporalUnused: "Temporal Tower 2",
+  UnusedBrineCave: "Brine Cave 2",
+  UnusedSteamCave: "Steam Cave 2",
+  UnusedWaterfallPond: "Waterfall Pond 2",
+  WorldAbyss2: "World Abyss"
+}
+const regionName = (map: string): string =>
+  REGION_NAME_OVERRIDES[map] ??
+  map.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Za-z])(\d)/g, "$1 $2")
 
 const b64ToBytes = (b64: string): Uint8Array =>
   Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
@@ -281,6 +301,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   let povBerryStages: number[] | undefined // player.berryTreesStages (Grass: 1→3 ripen cycle)
   let povFlowers: string[] | undefined // player.flowerPots[i].name (Flora: evolves in place)
   let povWandererIds: Set<string> | undefined // player.wanderers keys (uuid per appearance)
+  let povMap: string | undefined // player.map (current region; changes when a portal is taken)
 
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i]
@@ -392,6 +413,12 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       }
       const money = pov.money
       const level = pov.experienceManager?.level
+      // Region change — player.map is set to the portal's destination when one is taken (town → first
+      // region, then region → region). The initial "town" baseline isn't logged (first observed value).
+      const map = (pov as { map?: string }).map
+      if (povMap !== undefined && map && map !== povMap) {
+        actions.push({ t: f.t, type: "region", label: `Entered ${regionName(map)}` })
+      }
       const shop = pov.shop ? Array.from(pov.shop as ArrayLike<string>) : []
       const board = new Map<string, string>()
       // Per-unit item sets (pokemon.items is a SetSchema) + positions, captured this frame for the
@@ -787,6 +814,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       povBerryStages = berryStages
       povFlowers = flowers
       povWandererIds = wandererIds
+      povMap = map
     }
   }
 

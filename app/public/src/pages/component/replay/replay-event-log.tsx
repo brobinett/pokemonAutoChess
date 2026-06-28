@@ -100,6 +100,7 @@ const ACTION_CAT: Record<string, Category> = {
   pick: "flow",
   round: "flow",
   town: "flow",
+  region: "flow",
   item: "items",
   craft: "items",
   equip: "items",
