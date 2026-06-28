@@ -66,6 +66,12 @@ const spriteCountPerPokemon = new Map<string, number>()
 
 export function resetSpriteCounts() {
   spriteCountPerPokemon.clear()
+  // Also drop any in-flight lazy atlas-load promises. A scene restart (the replay viewer's re-attach
+  // seek) resets the Phaser loader and aborts in-flight loads, so a load that was mid-flight never
+  // fires its filecomplete/addtexture events — its cached promise here would stay pending forever, and
+  // every later sprite of that index would await that dead promise and stay stuck on the
+  // loading-pokeball placeholder. Clearing lets the rebuilt scene re-issue a fresh load for it.
+  for (const index in lazyLoadingRequests) delete lazyLoadingRequests[index]
 }
 
 const isGameScene = (scene: Phaser.Scene): scene is GameScene =>
@@ -1626,6 +1632,19 @@ export function loadCompressedAtlas(
     return lazyLoadingRequests[index]
   }
   lazyLoadingRequests[index] = new Promise((resolve) => {
+    // If the atlas JSON or its texture fails to load (a network error, or the 5s xhr.timeout above when
+    // the server is overloaded), the filecomplete/addtexture events never fire. Without this the cached
+    // promise here would stay pending forever and every later sprite of this index would await a dead
+    // promise — stuck on the loading-pokeball placeholder until a full page reload (the live-game bug
+    // players work around by reloading). Drop the cache entry on error so a later-constructed sprite
+    // re-issues the load and recovers on its own.
+    const onError = (file: Phaser.Loader.File) => {
+      if (file.key !== `pokemon-atlas-${index}` && file.key !== index) return
+      scene.load.off("loaderror", onError)
+      delete lazyLoadingRequests[index]
+      resolve(index) // unblock the awaiting sprite (it falls back to the missingno texture for now)
+    }
+    scene.load.on("loaderror", onError)
     scene.load.once(
       `filecomplete-json-pokemon-atlas-${index}`,
       (key, type, data) => {
@@ -1695,6 +1714,7 @@ export function loadCompressedAtlas(
 
         //console.log("load multiatlas " + index)
         scene.textures.once(`addtexture-${index}`, () => {
+          scene.load.off("loaderror", onError)
           delete lazyLoadingRequests[index]
           resolve(index)
         })
