@@ -65,6 +65,10 @@ export type ReplayEventType =
   | "synergy" // a synergy tier activated/upgraded — player.synergies crossed a SynergyTriggers threshold
   | "town" // a town encounter NPC appeared (state.townEncounter — shared, game-level)
   | "region" // the POV took a portal to a new region (player.map changed)
+  | "artifact" // a Normal-synergy scarf was crafted (scarvesItems; Fairy wands log via `pick`)
+  | "weather" // the POV's fight started with weather (its simulation's weather, ≠ NEUTRAL)
+  | "berries" // the POV's berry-tree species repopulated (berryTreesType — changes on each region)
+  | "rule" // a special game rule is in effect (state.specialGameRule — scribble modes; once, at start)
   | "item" // an item entered player.items with no unit losing it (pve reward, town, synergy, dig…)
   | "craft" // components combined into a completed item (player.items bench-combine OR onto a unit)
   | "equip" // an item left player.items and landed on a board unit
@@ -107,11 +111,14 @@ const PVE_OPPONENT_NAMES = new Set<string>(Object.values(PVEStages).map((s) => s
 // Round outcome label. `name` is the opponent: a PvE round stores an i18n key like "pkm.MAGIKARP" or a
 // boss key like "legendary_birds" (prettify both → "Magikarp" / "Legendary Birds"); a PvP round stores
 // the player's display name (use as-is — prettifying would mangle mixed-case names).
-function roundLabel(result: string, name: string): string {
+function roundLabel(result: string, name: string, shiny: boolean): string {
   let opp: string
+  const isPvE = name?.startsWith("pkm.") || PVE_OPPONENT_NAMES.has(name)
   if (name?.startsWith("pkm.")) opp = prettyName(name.slice(4))
   else if (PVE_OPPONENT_NAMES.has(name)) opp = prettyName(name)
   else opp = name || "opponent"
+  // A shiny PvE encounter (state.shinyEncounter — Celebi/Shiny Hunter) just modifies the opponent name.
+  if (isPvE && shiny) opp = `Shiny ${opp}`
   if (result === BattleResult.WIN) return `Beat ${opp}`
   if (result === BattleResult.DEFEAT) return `Lost to ${opp}`
   return `Draw vs ${opp}`
@@ -181,6 +188,11 @@ const REGION_NAME_OVERRIDES: Record<string, string> = {
 const regionName = (map: string): string =>
   REGION_NAME_OVERRIDES[map] ??
   map.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Za-z])(\d)/g, "$1 $2")
+
+// Weather enum values are single tokens (RAIN → "Rain") except BLOODMOON, which the game labels "Blood
+// Moon" (matches the `t("weather.*")` strings).
+const weatherName = (w: string): string =>
+  w === "BLOODMOON" ? "Blood Moon" : prettyName(w)
 
 const b64ToBytes = (b64: string): Uint8Array =>
   Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
@@ -281,6 +293,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   let prevPhase: number | undefined
   let prevStage: number | undefined
   let prevTownEncounter: string | null | undefined // state.townEncounter (shared town NPC)
+  let prevRule: string | null | undefined // state.specialGameRule (scribble mode; set once at start)
   const lifePrev = new Map<string, number>()
   const eliminated = new Set<string>()
 
@@ -302,6 +315,9 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   let povFlowers: string[] | undefined // player.flowerPots[i].name (Flora: evolves in place)
   let povWandererIds: Set<string> | undefined // player.wanderers keys (uuid per appearance)
   let povMap: string | undefined // player.map (current region; changes when a portal is taken)
+  let povScarves: string[] | undefined // player.scarvesItems (Normal scarf crafts; multiset)
+  let povWeather: string | undefined // the POV simulation's weather (per fight)
+  let povBerryTypes: string[] | undefined // player.berryTreesType (3 berry species, set per region)
 
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i]
@@ -384,6 +400,13 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     }
     prevTownEncounter = te
 
+    // Special game rule (scribble modes) — set once at game start, never changes; log its first sighting.
+    const rule = (state as { specialGameRule?: string | null }).specialGameRule ?? null
+    if (rule && rule !== prevRule) {
+      actions.push({ t: f.t, type: "rule", label: `Special rule: ${prettyName(rule)}` })
+    }
+    prevRule = rule
+
     state.players?.forEach((p, uid) => {
       const life = p.life
       if (typeof life !== "number") return
@@ -418,6 +441,21 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       const map = (pov as { map?: string }).map
       if (povMap !== undefined && map && map !== povMap) {
         actions.push({ t: f.t, type: "region", label: `Entered ${regionName(map)}` })
+      }
+      // Normal-synergy scarf: a crafted item put on a scarf slot (scarvesItems grows). It lands outside
+      // player.items, so the item-gain/craft diffs miss it. (A Fairy wand is NOT here — it resolves a
+      // proposition, already logged by the `pick` event with its alternatives.)
+      const scarves = pov.scarvesItems ? [...(pov.scarvesItems as Iterable<string>)] : []
+      if (povScarves) {
+        for (const x of multisetDiff(povScarves, scarves).added)
+          actions.push({ t: f.t, type: "artifact", label: `Scarf → ${prettyName(x)}` })
+      }
+      // Weather — the POV's own fight starts with a weather (its simulation's weather); NEUTRAL = none.
+      const weather = (
+        state.simulations?.get(pov.simulationId) as { weather?: string } | undefined
+      )?.weather
+      if (weather && weather !== "NEUTRAL" && weather !== povWeather) {
+        actions.push({ t: f.t, type: "weather", label: `Weather: ${weatherName(weather)}` })
       }
       const shop = pov.shop ? Array.from(pov.shop as ArrayLike<string>) : []
       const board = new Map<string, string>()
@@ -584,7 +622,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       if (povHistoryLen !== undefined && pov.history && historyLen > povHistoryLen) {
         for (let h = povHistoryLen; h < historyLen; h++) {
           const hi = pov.history.at(h)
-          if (hi) actions.push({ t: f.t, type: "round", label: roundLabel(hi.result, hi.name) })
+          if (hi) actions.push({ t: f.t, type: "round", label: roundLabel(hi.result, hi.name, !!(state as { shinyEncounter?: boolean }).shinyEncounter) })
         }
       }
 
@@ -769,6 +807,19 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           }
         }
       }
+      // Berry-tree species set — repopulates on each portal (so this fires alongside a region change).
+      const species = berryTypes.filter(Boolean)
+      if (
+        povBerryTypes !== undefined &&
+        species.length > 0 &&
+        species.join() !== povBerryTypes.join()
+      ) {
+        actions.push({
+          t: f.t,
+          type: "berries",
+          label: `Berry trees: ${species.map((b) => prettyName(b).replace(" Berry", "")).join(", ")}`
+        })
+      }
 
       // Flora — a flower in a pot evolved. flowerPots is seeded full at game start (initFlowerPots) and
       // evolves in place (rich-mulch drop), so the discrete event is a slot's species changing to its
@@ -815,6 +866,9 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       povFlowers = flowers
       povWandererIds = wandererIds
       povMap = map
+      povScarves = scarves
+      povWeather = weather
+      povBerryTypes = species
     }
   }
 
