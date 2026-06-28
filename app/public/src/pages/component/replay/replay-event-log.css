@@ -144,8 +144,10 @@
 .rel-caret:hover { opacity: 0.85; }
 .rel-caret.open { opacity: 1; transform: rotate(180deg); }
 
-/* expanded per-type sub-filter row */
+/* expanded per-type sub-filter row. flex-shrink:0 so the flex column doesn't squash it to nothing (the
+   row list below takes the shrink instead); it keeps its content height up to max-height, then scrolls. */
 .rel-subfilters {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   gap: 3px;
@@ -178,6 +180,8 @@
 
 /* per-category accent (applied to the row type text always; to the chip fill when on) */
 .rel-chip-combat.on { background: #ff9a8f; }
+.rel-chip-status.on { background: #ff7eb6; }
+.rel-chip-stats.on { background: #5ec8d8; }
 .rel-chip-economy.on { background: #ffd479; }
 .rel-chip-items.on { background: #e0a368; }
 .rel-chip-flow.on { background: #8fd0ff; }
@@ -194,7 +198,15 @@
   scrollbar-width: thin;
 }
 
+/* virtualization: rows are absolutely positioned at index*rowH inside a full-height sizer */
+.rel-sizer {
+  position: relative;
+  width: 100%;
+}
 .rel-row {
+  position: absolute;
+  left: 0;
+  right: 0;
   display: grid;
   grid-template-columns: 3em 3.5em 8.5em 1fr;
   gap: 6px;
@@ -226,6 +238,8 @@
 
 /* per-category accent on the row type text */
 .rel-cat-combat .rel-type { color: #ff9a8f; }
+.rel-cat-status .rel-type { color: #ff7eb6; }
+.rel-cat-stats .rel-type { color: #5ec8d8; }
 .rel-cat-economy .rel-type { color: #ffd479; }
 .rel-cat-items .rel-type { color: #e0a368; }
 .rel-cat-flow .rel-type { color: #8fd0ff; }

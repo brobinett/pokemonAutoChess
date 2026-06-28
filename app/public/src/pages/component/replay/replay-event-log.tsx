@@ -300,6 +300,13 @@ export default function ReplayEventLog({
   // Re-enabling jumps back to the playhead. A manual wheel-scroll auto-unlocks (feels natural).
   const [follow, setFollow] = useState(true)
   const [, force] = useState(0)
+  // Virtualized row list: render only the rows in (and just around) the scroll viewport. The firehose
+  // categories (Stats ~15k, Combat ~5k) would otherwise mount tens of thousands of DOM nodes and hang the
+  // tab. scrollTop + viewportH window the slice; rowH is the measured single-row height (spacers above/
+  // below stand in for the off-screen rows so the scrollbar stays accurate).
+  const [scrollTop, setScrollTop] = useState(0)
+  const [rowH, setRowH] = useState(18)
+  const [viewportH, setViewportH] = useState(400)
   const panelRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null) // scroll container; the active-row class is applied here imperatively
   // onSeek is recreated by the parent each render; hold it in a ref so the memoized row list (below) isn't
@@ -469,50 +476,48 @@ export default function ReplayEventLog({
     else break
   }
 
-  // The rows are STATIC during playback — only which one is "active" changes as the playhead advances.
-  // Rendering them inline meant the 200ms poll re-reconciled the whole list every tick (up to ~3200 rows
-  // with Combat on → seconds of main-thread blocking per minute). Memoize the row elements on [visible,
-  // base] so the poll re-render reuses the same element refs and React skips the rows entirely; the active
-  // highlight + autoscroll are then applied imperatively (below) without re-rendering any row.
-  const rows = useMemo(
-    () =>
-      // Build nothing while closed (the panel renders null below) — keeps a never-opened log free.
-      !open ? [] : visible.map((e, i) => (
-        <div
-          key={`${e.frame}:${e.t}:${i}`}
-          data-i={i}
-          className={`rel-row rel-${e.kind} rel-cat-${e.cat}`}
-          title={`seek to ${fmt(e.t - base)}`}
-          onClick={() => onSeekRef.current(e.t)}
-        >
-          <span className="rel-t">{fmt(e.t - base)}</span>
-          {tab === "all" ? (
-            // the player this event belongs to (uid-less game-level rows show blank)
-            <span className="rel-player" title={e.uid ? playerNames[e.uid] : ""}>{e.uid ? playerNames[e.uid] ?? "" : ""}</span>
-          ) : (
-            <span className="rel-frame">{e.frame >= 0 ? `#${e.frame}` : "·"}</span>
-          )}
-          <span className="rel-type">{e.type}</span>
-          <span className="rel-sum">{e.summary}</span>
-        </div>
-      )),
-    [visible, base, open, tab, playerNames]
-  )
+  // Virtualization window: the slice of `visible` to actually render, plus an overscan buffer. Only ~one
+  // viewport of rows is ever in the DOM, so a 15k-row firehose category mounts ~50 nodes, not 15k.
+  const OVERSCAN = 12
+  const total = visible.length
+  const startIdx = Math.max(0, Math.floor(scrollTop / rowH) - OVERSCAN)
+  const endIdx = Math.min(total, Math.ceil((scrollTop + viewportH) / rowH) + OVERSCAN)
+  const windowRows = open ? visible.slice(startIdx, endIdx) : []
 
-  // Move the `active` class + autoscroll imperatively as the playhead advances, so tracking the playhead
-  // costs one classList swap per tick instead of a full re-render of the (memoized) row list. Re-runs when
-  // the rows change (filter toggle / index load) so the highlight re-attaches to the freshly rendered DOM.
+  // Measure the real row height + viewport once rows are on screen (and when the row shape changes — the
+  // player column in the "all" tab is wider but still one line). Keeps the spacers/scrollbar accurate.
   useEffect(() => {
     if (!open) return
     const list = listRef.current
     if (!list) return
-    list.querySelector(".rel-row.active")?.classList.remove("active")
-    const el = list.querySelector<HTMLElement>(`.rel-row[data-i="${activeIdx}"]`)
-    if (el) {
-      el.classList.add("active")
-      if (follow) el.scrollIntoView({ block: "nearest" })
+    if (list.clientHeight) setViewportH(list.clientHeight)
+    const firstRow = list.querySelector<HTMLElement>(".rel-row")
+    if (firstRow && firstRow.offsetHeight > 0) setRowH(firstRow.offsetHeight)
+  }, [open, tab, total])
+
+  // Debug hook for the headless harnesses: the list is virtualized, so the DOM holds only a window of rows.
+  // Expose the full filtered set (for counts / per-type samples) under ?debug; cleared on unmount.
+  useEffect(() => {
+    if (typeof window === "undefined" || !new URLSearchParams(window.location.search).has("debug")) return
+    const w = window as unknown as { __eventLogRows?: LogEvent[] }
+    w.__eventLogRows = visible
+    return () => {
+      delete w.__eventLogRows
     }
-  }, [activeIdx, open, rows, follow])
+  }, [visible])
+
+  // Follow the playhead: keep the active row in view by scrolling the container (the active row may not be
+  // mounted, so we can't scrollIntoView it — compute its position from the index instead). A manual wheel
+  // unlocks follow (onWheel below); programmatic scrollTop only fires `scroll`, so it won't unlock it.
+  useEffect(() => {
+    if (!open || !follow) return
+    const list = listRef.current
+    if (!list || activeIdx < 0) return
+    const top = activeIdx * rowH
+    if (top < list.scrollTop || top + rowH > list.scrollTop + list.clientHeight) {
+      list.scrollTop = Math.max(0, top - list.clientHeight / 2)
+    }
+  }, [activeIdx, open, follow, rowH])
 
   if (!open) return null
   const toggle = (k: Category) => setEnabled((e) => ({ ...e, [k]: !e[k] }))
@@ -610,9 +615,36 @@ export default function ReplayEventLog({
       <div
         className="rel-list"
         ref={listRef}
+        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
         onWheel={() => follow && setFollow(false)}
       >
-        {rows}
+        {/* full-height sizer establishes the scrollbar; only the windowed rows are mounted, each absolutely
+            positioned at its index so off-screen rows cost nothing. */}
+        <div className="rel-sizer" style={{ height: total * rowH }}>
+          {windowRows.map((e, k) => {
+            const i = startIdx + k
+            return (
+              <div
+                key={`${e.frame}:${e.t}:${i}`}
+                data-i={i}
+                className={`rel-row rel-${e.kind} rel-cat-${e.cat}${i === activeIdx ? " active" : ""}`}
+                style={{ top: i * rowH }}
+                title={`seek to ${fmt(e.t - base)}`}
+                onClick={() => onSeekRef.current(e.t)}
+              >
+                <span className="rel-t">{fmt(e.t - base)}</span>
+                {tab === "all" ? (
+                  // the player this event belongs to (uid-less game-level rows show blank)
+                  <span className="rel-player" title={e.uid ? playerNames[e.uid] : ""}>{e.uid ? playerNames[e.uid] ?? "" : ""}</span>
+                ) : (
+                  <span className="rel-frame">{e.frame >= 0 ? `#${e.frame}` : "·"}</span>
+                )}
+                <span className="rel-type">{e.type}</span>
+                <span className="rel-sum">{e.summary}</span>
+              </div>
+            )
+          })}
+        </div>
       </div>
     </div>
   )
