@@ -74,6 +74,10 @@ export default class GameScene extends Scene {
   loadingManager: LoadingManager | null = null
   started: boolean = false
   spectate: boolean = false
+  // While spectating, the board to build on (re)start. Defaults to players[0] when unset (live
+  // spectate). The replay viewer passes the player it's currently watching so a seek's scene rebuild
+  // shows the right board directly, instead of flashing players[0] until setPlayer() re-centres it.
+  spectatedPlayerId: string | undefined = undefined
 
   constructor() {
     super({
@@ -82,10 +86,15 @@ export default class GameScene extends Scene {
     })
   }
 
-  init(data: { room: Room<GameState>; spectate: boolean }) {
+  init(data: {
+    room: Room<GameState>
+    spectate: boolean
+    spectatedPlayerId?: string
+  }) {
     this.tilemaps = new Map()
     this.room = data.room
     this.spectate = data.spectate
+    this.spectatedPlayerId = data.spectatedPlayerId
     this.uid = firebase.auth().currentUser?.uid
     this.started = false
     // Phaser shuts the scene's display list, tweens and clock down on a restart, but not raw
@@ -133,7 +142,7 @@ export default class GameScene extends Scene {
 
       const playerUids = schemaValues(this.room.state.players).map((p) => p.id)
       const player = this.room.state.players.get(
-        this.spectate ? playerUids[0] : this.uid
+        this.spectate ? this.spectatedPlayerId ?? playerUids[0] : this.uid
       ) as Player
 
       this.setMap(player.map)

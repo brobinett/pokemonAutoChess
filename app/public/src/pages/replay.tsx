@@ -237,7 +237,10 @@ export default function Replay() {
       // Re-attach: remember the outgoing board so the wait-effect can tell the fresh scene apart, then
       // re-point the persistent GameContainer at the new room and restart its scene (Phaser kept alive).
       prevBoardRef.current = gc.gameScene?.board ?? null
-      reattachReplayRoom(room as unknown as Room<GameState>)
+      reattachReplayRoom(
+        room as unknown as Room<GameState>,
+        spectateTargetRef.current ?? undefined
+      )
     } else {
       // Initial load: present the recording's viewer as the logged-in user so the page resolves "self",
       // then mount <Game/> (its init creates the Phaser game + installs the re-attach hook).

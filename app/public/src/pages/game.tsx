@@ -111,9 +111,14 @@ let gameContainer: GameContainer
 // the install is guarded to run once per instance, so a per-unmount null-out would, under StrictMode's
 // setup→cleanup→setup, leave it permanently null. A stale impl after unmount is harmless — only the
 // replay viewer calls reattachReplayRoom, and only while it's mounted.
-let reattachReplayRoomImpl: ((room: Room<GameState>) => void) | null = null
-export function reattachReplayRoom(room: Room<GameState>) {
-  reattachReplayRoomImpl?.(room)
+let reattachReplayRoomImpl:
+  | ((room: Room<GameState>, spectatedPlayerId?: string) => void)
+  | null = null
+export function reattachReplayRoom(
+  room: Room<GameState>,
+  spectatedPlayerId?: string
+) {
+  reattachReplayRoomImpl?.(room, spectatedPlayerId)
 }
 
 export function getGameScene(): GameScene | undefined {
@@ -200,6 +205,27 @@ export default function Game() {
   const [finalRankVisibility, setFinalRankVisibility] =
     useState<FinalRankVisibility>(FinalRankVisibility.HIDDEN)
   const container = useRef<HTMLDivElement>(null)
+
+  // In a replay the placing popup is informational only — its live "stay till the end / leave game"
+  // actions don't apply to a spectator, and leaving it up blocks the rest of the match (most visibly
+  // when the POV player is eliminated mid-game and you keep watching the survivors). Show the placing
+  // briefly, then auto-dismiss so playback keeps going, mirroring the "stay till the end" the viewer
+  // would otherwise have to click. No-op in a live game (isReplay is false).
+  const isReplay = (room as { roomId?: string } | undefined)?.roomId === "replay"
+  useEffect(() => {
+    if (
+      !isReplay ||
+      finalRankVisibility !== FinalRankVisibility.VISIBLE ||
+      finalRank <= 0
+    )
+      return
+    const id = setTimeout(
+      () => setFinalRankVisibility(FinalRankVisibility.CLOSED),
+      5000
+    )
+    return () => clearTimeout(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReplay, finalRankVisibility, finalRank])
 
   const currentGameEvent = getCurrentGameEvent()
 
@@ -1028,14 +1054,20 @@ export default function Game() {
       // re-register the minigame/state listeners + the per-room binding, and restart the scene against
       // it — WITHOUT destroying Phaser, so the loaded assets are reused and the seek is near-instant.
       // Only ever invoked from the replay viewer (reattachReplayRoom); never in a live game.
-      reattachReplayRoomImpl = (newRoom: Room<GameState>) => {
+      reattachReplayRoomImpl = (
+        newRoom: Room<GameState>,
+        spectatedPlayerId?: string
+      ) => {
         gameContainer.room = newRoom
         gameContainer.$ = getStateCallbacks(newRoom)
         gameContainer.initializeEvents()
         bindRoom(newRoom)
+        // Build the scene directly on the board the viewer is watching (carried across the seek), so the
+        // rebuild doesn't briefly show players[0] until begin()'s setPlayer() re-centres it.
         gameContainer.game?.scene.start("gameScene", {
           room: newRoom,
-          spectate: gameContainer.spectate
+          spectate: gameContainer.spectate,
+          spectatedPlayerId
         })
       }
     }
