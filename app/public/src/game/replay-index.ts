@@ -1,6 +1,7 @@
 import { SchemaSerializer } from "@colyseus/sdk"
 import type { Iterator } from "@colyseus/schema"
 import type GameState from "../../../rooms/states/game-state"
+import type Player from "../../../models/colyseus-models/player"
 import { getPokemonData } from "../../../models/precomputed/precomputed-pokemon-data"
 import { getLevelUpCost } from "../../../models/colyseus-models/experience-manager"
 import { PVEStages } from "../../../models/pve-stages"
@@ -44,9 +45,11 @@ export interface ReplayStageMark {
   stage: number
   t: number // absolute ms the stage first appears
 }
-// "elimination" comes from any player's life crossing 0; the rest are POV-player actions derived by
-// diffing the recording player's own synced state (money / shop / board / level / proposition choices)
-// — they're recoverable only for the POV because opponents' shops/gold aren't synced to this client.
+// "elimination" comes from any player's life crossing 0; the rest are per-player actions derived by
+// diffing each player's synced state (board / money / level / synergies / items / history / …). The
+// Player schema @view-hides ONLY the shop (shop / shopLocked / shopFreeRolls), so we derive these for
+// EVERY player, not just the recording POV — each action carries a `uid`. The shop-only signals
+// (reroll / "remove", and the buy-vs-gained distinction) are recoverable for the POV alone.
 export type ReplayEventType =
   | "elimination"
   | "reroll"
@@ -138,9 +141,14 @@ export interface ReplayIndex {
   segments: ReplaySegment[] // phase-within-stage boundaries, anchored at/after gameStartMs
   stages: ReplayStageMark[] // first t per distinct stage
   events: ReplayEvent[] // eliminations, sorted by t — these drive the scrubber's event markers
-  // POV-player actions (reroll/buy/sell/level/proposition pick), sorted by t. Kept separate from
-  // `events` so they feed the event log WITHOUT flooding the scrubber with a marker per reroll/buy.
+  // Per-player actions (reroll/buy/sell/level/proposition pick/synergy/items/…), sorted by t. Each
+  // carries `uid` (the player it belongs to) so the log can show one player or everyone; game-level
+  // rows (town / special-rule) are uid-less. Kept separate from `events` so they feed the event log
+  // WITHOUT flooding the scrubber with a marker per reroll/buy.
   actions: ReplayEvent[]
+  // uid → the player's in-game name (display name for the per-player log column / tab labels). Built
+  // from the final reconstructed state, so it covers every player that appeared.
+  playerNames: Record<string, string>
   // Combat-event unit names resolved by tile, keyed by the message frame's index in manifest.frames.
   // The ABILITY / POKEMON_DAMAGE / POKEMON_HEAL payloads identify units by (simulationId, x, y), not
   // by id, so we look the tile up against the simulation positions decoded as of that frame.
@@ -307,6 +315,364 @@ function digSite(state: GameState, uid: string, unitId: string): { x: number; y:
   return { x, y, depth: Math.min(before + 1, 5) }
 }
 
+// The per-player "previous frame" state the diff-derivation compares against. One of these is kept per
+// player (prevByPlayer) and refreshed each state frame. `shop` is empty for non-POV players (the only
+// @view-hidden field), so the shop-dependent branches below simply don't fire for them.
+interface PlayerSnapshot {
+  money: number | undefined
+  level: number | undefined
+  shop: string[]
+  board: Map<string, string> // unit id → name
+  choices: Map<string, ChoiceSlate> // choice id → its offered slate
+  historyLen: number
+  items: string[] // bench items (multiset)
+  unitItems: Map<string, string[]> // unit id → pokemon.items
+  unitPos: Map<string, { x: number; y: number }> // unit id → (positionX, positionY)
+  synSteps: Map<string, number> // synergy → active tier step
+  berryStages: number[]
+  berryTypes: string[] // filtered species list (for the repopulate diff)
+  flowers: string[]
+  wandererIds: Set<string>
+  map: string | undefined
+  scarves: string[]
+}
+
+type DeriveCtx = { t: number; specialGameRule: Parameters<typeof getLevelUpCost>[0]; shinyEncounter: boolean }
+
+// Derive one player's state-diff events for this frame by comparing its synced state against the prior
+// snapshot. Runs for EVERY player (Tab 2 = everyone) — the same logic the recording POV gets, minus the
+// shop-only signals (reroll / "remove" / buy-vs-gained), which need the @view-hidden shop and so only
+// fire for the POV (whose snapshot carries a populated `shop`). Pure: returns the events (caller tags
+// them with the player's uid) + the fresh snapshot to store. On the first frame a player is seen `prev`
+// is undefined → no diffs, just a baseline snapshot. Combat (status/stat/weather) is NOT here — it's
+// single-POV (the recorder's camera) and stays in buildReplayIndex.
+function derivePlayerStateEvents(
+  p: Player,
+  prev: PlayerSnapshot | undefined,
+  ctx: DeriveCtx
+): { events: { t: number; type: ReplayEventType; label: string }[]; snap: PlayerSnapshot } {
+  const events: { t: number; type: ReplayEventType; label: string }[] = []
+  const push = (type: ReplayEventType, label: string) => events.push({ t: ctx.t, type, label })
+
+  // --- current-frame reads (needed for the snapshot regardless of prev) ---
+  const money = p.money
+  const level = p.experienceManager?.level
+  const map = (p as { map?: string }).map
+  const scarves = p.scarvesItems ? [...(p.scarvesItems as Iterable<string>)] : []
+  const shop = p.shop ? Array.from(p.shop as ArrayLike<string>) : []
+  const board = new Map<string, string>()
+  const unitItems = new Map<string, string[]>()
+  const unitPos = new Map<string, { x: number; y: number }>()
+  p.board?.forEach((u, id) => {
+    board.set(id, u.name)
+    unitItems.set(id, u.items ? [...(u.items as Iterable<string>)] : [])
+    unitPos.set(id, { x: u.positionX ?? 0, y: u.positionY ?? 0 })
+  })
+  const choices = new Set<string>()
+  const choiceSlates = new Map<string, ChoiceSlate>()
+  p.choices?.forEach((c) => {
+    choices.add(c.id)
+    choiceSlates.set(c.id, {
+      type: c.type,
+      pokemons: c.pokemons ? [...(c.pokemons as Iterable<string>)] : [],
+      items: c.items ? [...(c.items as Iterable<string>)] : []
+    })
+  })
+  const items = p.items ? Array.from(p.items as ArrayLike<string>) : []
+  const historyLen = p.history?.length ?? 0
+  // synergy tier step = how many SynergyTriggers thresholds the current count meets (mirrors getSynergyStep)
+  const synSteps = new Map<string, number>()
+  p.synergies?.forEach((count, syn) => {
+    const triggers = SynergyTriggers[syn as Synergy] ?? []
+    let step = 0
+    for (const tr of triggers) if ((count ?? 0) >= tr) step++
+    if (step > 0) synSteps.set(syn, step)
+  })
+  const berryStages = p.berryTreesStages ? Array.from(p.berryTreesStages as ArrayLike<number>) : []
+  const berryTypes = p.berryTreesType ? Array.from(p.berryTreesType as ArrayLike<string>) : []
+  const species = berryTypes.filter(Boolean)
+  const flowers: string[] = []
+  p.flowerPots?.forEach((pot) => flowers.push(pot?.name ?? ""))
+  const wandererIds = new Set<string>()
+  const wandererPkm = new Map<string, string>()
+  p.wanderers?.forEach((w, id) => {
+    wandererIds.add(id)
+    wandererPkm.set(id, (w as { pkm?: string })?.pkm ?? "")
+  })
+
+  if (prev) {
+    // Region change — player.map is set to the portal's destination when one is taken.
+    if (prev.map !== undefined && map && map !== prev.map) push("region", `Entered ${regionName(map)}`)
+    // Normal-synergy scarf craft: scarvesItems grows (lands outside player.items, so the item diffs miss it).
+    for (const x of multisetDiff(prev.scarves, scarves).added) push("artifact", `Scarf → ${prettyName(x)}`)
+
+    // Choices resolved this frame: present last frame, gone now (the player picked → left player.choices).
+    // Their snapshotted slate is what the pick was made FROM. Auto-pick on timeout can resolve several.
+    const resolved = [...prev.choices].filter(([id]) => !choices.has(id)).map(([, slate]) => slate)
+    // Set by the board branch when a combined pokemon+item proposition is picked (the item shows inline in
+    // the pick label); the item branch then consumes it without re-logging.
+    let combinedPickItem: string | null = null
+
+    {
+      const dMoney = typeof money === "number" && typeof prev.money === "number" ? money - prev.money : 0
+      const levelUpCost = getLevelUpCost(ctx.specialGameRule)
+      const added = [...board].filter(([id]) => !prev.board.has(id))
+      const removed = [...prev.board].filter(([id]) => !board.has(id))
+      const choiceResolved = resolved.length > 0
+      // A pokemon proposition resolved this frame: match the chosen entry against the units that appeared
+      // (a duo adds both) so we can show what it was picked OVER. null if we can't match it to a board add.
+      const pokeSlate = resolved.find((s) => s.pokemons.length > 0)
+      let pokePickLabel: string | null = null
+      if (pokeSlate) {
+        const addedNames = new Set(added.map(([, n]) => n))
+        const chosenIdx = pokeSlate.pokemons.findIndex((pp) =>
+          propositionConstituents(pp).some((c) => addedNames.has(c))
+        )
+        if (chosenIdx >= 0) {
+          const withItems = pokeSlate.items.length > 0
+          const opt = (i: number) => {
+            const item = withItems && pokeSlate.items[i] ? ` (${prettyName(pokeSlate.items[i])})` : ""
+            return `${prettyProposition(pokeSlate.pokemons[i])}${item}`
+          }
+          const alts = pokeSlate.pokemons.map((_, i) => i).filter((i) => i !== chosenIdx).map(opt)
+          pokePickLabel = alts.length ? `Picked ${opt(chosenIdx)} over ${alts.join(", ")}` : `Picked ${opt(chosenIdx)}`
+          if (withItems && pokeSlate.items[chosenIdx]) combinedPickItem = pokeSlate.items[chosenIdx]
+        }
+      }
+      const boardChanged = added.length > 0 || removed.length > 0 || board.size !== prev.board.size
+      // Slots cleared to Pkm.DEFAULT this frame: a buy (also board.set → boardChanged) or a "remove" ("e",
+      // never touches the board). Empty for non-POV players (their shop isn't synced).
+      const emptied: string[] = []
+      for (let s = 0; s < prev.shop.length && s < shop.length; s++) {
+        if (prev.shop[s] !== Pkm.DEFAULT && shop[s] === Pkm.DEFAULT) emptied.push(prev.shop[s])
+      }
+      const refreshed = shop.filter((s, k) => s !== prev.shop[k] && s !== Pkm.DEFAULT).length
+
+      // Evolution: a board churn where an added unit is the evolution of a removed one (or a same-species
+      // combine). Detected independently of the shop branch — a 3-combine on BUY emits both a buy and an evolve.
+      if (added.length && removed.length) {
+        if (removed.some(([, n]) => n === Pkm.EGG)) {
+          push("hatch", `Hatched ${prettyName(added[0][1])}`)
+        } else {
+          let pair: [string, string] | undefined
+          for (const [, ev] of added) {
+            const base = removed.find(([, b]) => evolvesTo(b, ev))?.[1]
+            if (base) {
+              pair = [base, ev]
+              break
+            }
+          }
+          if (!pair && added.length === 1) {
+            const counts = new Map<string, number>()
+            for (const [, b] of removed) counts.set(b, (counts.get(b) ?? 0) + 1)
+            const combinedBase = [...counts].find(([, n]) => n >= 2)?.[0]
+            if (combinedBase) pair = [combinedBase, added[0][1]]
+          }
+          if (pair) push("evolve", `${prettyName(pair[0])} → ${prettyName(pair[1])}`)
+        }
+      }
+
+      // Priority so one underlying SHOP action emits one event. (Buy/remove/reroll need the shop → POV only.)
+      if (emptied.length) {
+        const kind = boardChanged ? "buy" : "remove"
+        emptied.forEach((name) =>
+          push(kind, `${prettyName(name)}${kind === "buy" && emptied.length === 1 && dMoney < 0 ? ` (${goldStr(dMoney)})` : ""}`)
+        )
+      } else if (choiceResolved && added.length) {
+        push("pick", pokePickLabel ?? `Picked ${prettyName(added[0][1])}`)
+      } else if (removed.length && !added.length && removed.length <= 3 && p.alive !== false) {
+        // Sell — structural (a board unit leaves with no add and no shop-slot buy), mode-independent.
+        push("sell", `${prettyName(removed[0][1])}${dMoney > 0 ? ` (${goldStr(dMoney)})` : ""}`)
+      } else if (!boardChanged && refreshed >= REROLL_MIN_REFRESHED_SLOTS) {
+        push("reroll", dMoney < 0 ? `Reroll (${goldStr(dMoney)})` : "Shop refresh")
+      } else if (dMoney === -levelUpCost && !boardChanged && emptied.length === 0 && refreshed === 0) {
+        push("xp", `Bought 4 XP (${goldStr(dMoney)})`)
+      } else if (added.length && !removed.length) {
+        // A unit appeared with no buy/pick/evolution behind it: Baby egg, Water fish, or a free gain. (For a
+        // non-POV player a real buy lands here too — we can't see the shop — so it reads as "Gained".)
+        for (const [id, name] of added) {
+          if (name === Pkm.EGG) {
+            const egg = p.board.get(id) as { evolution?: string; shiny?: boolean } | undefined
+            const hatch = egg?.evolution && egg.evolution !== Pkm.DEFAULT ? prettyName(egg.evolution) : ""
+            const golden = egg?.shiny ? "golden " : ""
+            push("egg", hatch ? `Laid ${golden}${hatch} egg` : "Laid an egg")
+          } else if (p.board.get(id)?.action === PokemonActionState.FISH) {
+            push("fish", `Fished ${prettyName(name)}`)
+          } else {
+            push("gained", `Gained ${prettyName(name)}`)
+          }
+        }
+      }
+      if (typeof level === "number" && typeof prev.level === "number" && level > prev.level) {
+        push("level", `→ ${level}`)
+      }
+    }
+
+    // Round results — each new player.history entry is a resolved fight (win/loss/draw vs opponent).
+    if (p.history && historyLen > prev.historyLen) {
+      for (let h = prev.historyLen; h < historyLen; h++) {
+        const hi = p.history.at(h)
+        if (hi) push("round", roundLabel(hi.result, hi.name, ctx.shinyEncounter))
+      }
+    }
+
+    // Item events — classify the player.items diff against this frame's per-unit pokemon.items movements
+    // (equip / on-unit craft / bench craft / bench unequip / sell return / gain). See the long note that
+    // used to sit here; full rationale lives in replay/EVENT-LOG.md.
+    {
+      const { added: pAdded, removed: pRemoved } = multisetDiff(prev.items, items)
+      type UnitDelta = { id: string; name: string; item: string; present: boolean }
+      const uGained: UnitDelta[] = []
+      const uLost: UnitDelta[] = []
+      const ids = new Set<string>([...prev.unitItems.keys(), ...unitItems.keys()])
+      for (const id of ids) {
+        const name = prettyName(board.get(id) ?? prev.board.get(id) ?? "")
+        const present = board.has(id)
+        const d = multisetDiff(prev.unitItems.get(id) ?? [], unitItems.get(id) ?? [])
+        for (const it of d.added) uGained.push({ id, name, item: it, present })
+        for (const it of d.removed) uLost.push({ id, name, item: it, present })
+      }
+      const takeStr = (arr: string[], x: string): boolean => {
+        const k = arr.indexOf(x)
+        if (k < 0) return false
+        arr.splice(k, 1)
+        return true
+      }
+      const takeUnit = (arr: UnitDelta[], pred: (u: UnitDelta) => boolean): UnitDelta | undefined => {
+        const k = arr.findIndex(pred)
+        return k < 0 ? undefined : arr.splice(k, 1)[0]
+      }
+
+      // 0) Item proposition pick: a resolved choice whose slate is items. The chosen item entered
+      //    player.items this frame — log it as a pick and consume it so it isn't re-read as a craft/gain.
+      const itemSlate = resolved.find((s) => s.items.length > 0)
+      if (itemSlate) {
+        if (itemSlate.pokemons.length > 0) {
+          const chosen = combinedPickItem ?? itemSlate.items.find((it) => pAdded.includes(it))
+          if (chosen) takeStr(pAdded, chosen)
+        } else {
+          const chosen = itemSlate.items.find((it) => pAdded.includes(it))
+          if (chosen) {
+            takeStr(pAdded, chosen)
+            push("pick", pickedOverLabel(prettyName(chosen), itemSlate.items.filter((it) => it !== chosen).map(prettyName)))
+          }
+        }
+      }
+
+      // 1) On-unit craft: a unit gained result R and lost component D, player.items lost C, ItemRecipe[R]={C,D}.
+      for (let g = uGained.length - 1; g >= 0; g--) {
+        const R = uGained[g].item
+        const recipe = ItemRecipe[R as keyof typeof ItemRecipe]
+        if (!recipe || recipe.length !== 2) continue
+        const lostD = uLost.find((u) => u.id === uGained[g].id && (u.item === recipe[0] || u.item === recipe[1]))
+        if (!lostD) continue
+        const C = lostD.item === recipe[0] ? recipe[1] : recipe[0]
+        if (!pRemoved.includes(C)) continue
+        takeStr(pRemoved, C)
+        takeUnit(uLost, (u) => u === lostD)
+        push("craft", `${prettyName(recipe[0])} + ${prettyName(recipe[1])} → ${prettyName(R)} on ${uGained[g].name}`)
+        uGained.splice(g, 1)
+      }
+
+      // 2) Bench craft (player.items only): a result enters and both its components leave player.items.
+      for (let a = pAdded.length - 1; a >= 0; a--) {
+        const recipe = ItemRecipe[pAdded[a] as keyof typeof ItemRecipe]
+        if (!recipe || recipe.length !== 2) continue
+        const i0 = pRemoved.indexOf(recipe[0])
+        if (i0 < 0) continue
+        const rest = [...pRemoved]
+        rest.splice(i0, 1)
+        if (rest.indexOf(recipe[1]) < 0) continue
+        pRemoved.splice(pRemoved.indexOf(recipe[0]), 1)
+        pRemoved.splice(pRemoved.indexOf(recipe[1]), 1)
+        push("craft", `${prettyName(recipe[0])} + ${prettyName(recipe[1])} → ${prettyName(pAdded[a])}`)
+        pAdded.splice(a, 1)
+      }
+
+      // 3) Equip: player.items lost X and a unit gained X this frame.
+      for (let i = pRemoved.length - 1; i >= 0; i--) {
+        const u = takeUnit(uGained, (g) => g.item === pRemoved[i])
+        if (u) {
+          push("equip", `Equipped ${prettyName(pRemoved[i])} on ${u.name}`)
+          pRemoved.splice(i, 1)
+        }
+      }
+
+      // 4) Remaining player.items additions: unequip return (still-present unit), sell return (deleted
+      //    unit → suppress; the sell already fired), else a genuine gain.
+      for (const x of pAdded) {
+        const u = takeUnit(uLost, (l) => l.item === x)
+        if (u) {
+          if (u.present) push("unequip", `Unequipped ${prettyName(x)} from ${u.name}`)
+        } else {
+          push("item", `Got ${prettyName(x)}`)
+        }
+      }
+    }
+
+    // Positioning — any board unit whose (x,y) changed (deploy / bench / rearrange). Own chip, default off.
+    unitPos.forEach((pos, id) => {
+      const prv = prev.unitPos.get(id)
+      if (prv && (prv.x !== pos.x || prv.y !== pos.y)) {
+        push("move", `${prettyName(board.get(id) ?? "")} → (${pos.x},${pos.y})`)
+      }
+    })
+
+    // Synergy thresholds — player.synergies crossing a SynergyTriggers tier (increase only).
+    synSteps.forEach((step, syn) => {
+      const prv = prev.synSteps.get(syn) ?? 0
+      if (step > prv) {
+        const triggers = SynergyTriggers[syn as Synergy] ?? []
+        for (let s = prv; s < step; s++) push("synergy", `${prettyName(syn)} ${triggers[s]}`)
+      }
+    })
+
+    // Grass — a berry tree ripened (stage reached 3). berryTypes[i] names the berry.
+    for (let i = 0; i < berryStages.length; i++) {
+      if ((prev.berryStages[i] ?? 0) < 3 && (berryStages[i] ?? 0) >= 3) {
+        push("berry", `${prettyName(berryTypes[i] ?? "Berry")} ripe`)
+      }
+    }
+    // Berry-tree species set — repopulates on each portal (so this fires alongside a region change).
+    if (species.length > 0 && species.join() !== prev.berryTypes.join()) {
+      push("berries", `Berry trees: ${species.map((b) => prettyName(b).replace(" Berry", "")).join(", ")}`)
+    }
+
+    // Flora — a flower in a pot evolved in place (mulch-fed).
+    for (let i = 0; i < flowers.length; i++) {
+      const prv = prev.flowers[i]
+      if (prv && flowers[i] && prv !== flowers[i] && evolvesTo(prv, flowers[i])) {
+        push("flower", `Flower → ${prettyName(flowers[i])}`)
+      }
+    }
+
+    // Wanderer — a catchable pokemon appeared (player.wanderers gains a fresh-uuid entry).
+    wandererIds.forEach((id) => {
+      if (!prev.wandererIds.has(id)) push("wanderer", `Wandering ${prettyName(wandererPkm.get(id) ?? "")}`)
+    })
+  }
+
+  const snap: PlayerSnapshot = {
+    money,
+    level,
+    shop,
+    board,
+    choices: choiceSlates,
+    historyLen,
+    items,
+    unitItems,
+    unitPos,
+    synSteps,
+    berryStages,
+    berryTypes: species,
+    flowers,
+    wandererIds,
+    map,
+    scarves
+  }
+  return { events, snap }
+}
+
 export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): ReplayIndex {
   const ser = new SchemaSerializer<GameState>()
   let hasState = false
@@ -338,24 +704,10 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   // A PLAYER_INCOME message awaiting its breakdown (resolved on the next PICK-phase state frame, when
   // this round's interest/streak have been patched in). { idx: message frame, total: the gold amount }.
   let pendingIncome: { idx: number; total: number } | null = null
-  // POV-player snapshots for the action derivation (money/level/shop/board/proposition-choices).
-  let povMoney: number | undefined
-  let povLevel: number | undefined
-  let povShop: string[] | undefined
-  let povBoard: Map<string, string> | undefined // unit id → name
-  let povChoices: Map<string, ChoiceSlate> | undefined // choice id → its offered slate
-  let povHistoryLen: number | undefined // length of player.history (each new entry = a round result)
-  let povItems: string[] | undefined // player.items (bench items; multiset — duplicates matter)
-  let povUnitItems: Map<string, string[]> | undefined // unit id → its pokemon.items (for equip/unequip)
-  let povUnitPos: Map<string, { x: number; y: number }> | undefined // unit id → (positionX, positionY)
-  let povSynSteps: Map<string, number> | undefined // synergy → active tier step (#thresholds met)
-  let povBerryStages: number[] | undefined // player.berryTreesStages (Grass: 1→3 ripen cycle)
-  let povFlowers: string[] | undefined // player.flowerPots[i].name (Flora: evolves in place)
-  let povWandererIds: Set<string> | undefined // player.wanderers keys (uuid per appearance)
-  let povMap: string | undefined // player.map (current region; changes when a portal is taken)
-  let povScarves: string[] | undefined // player.scarvesItems (Normal scarf crafts; multiset)
-  let povWeather: string | undefined // the POV simulation's weather (per fight)
-  let povBerryTypes: string[] | undefined // player.berryTreesType (3 berry species, set per region)
+  // Per-player snapshot of the previous state frame, keyed by uid — the diff baseline for
+  // derivePlayerStateEvents (Tab 2 = everyone). Undefined for a player until its first state frame.
+  const prevByPlayer = new Map<string, PlayerSnapshot>()
+  let povWeather: string | undefined // the POV simulation's weather (per fight) — single-POV combat
 
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i]
@@ -461,7 +813,11 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       lifePrev.set(uid, life)
     })
 
-    // POV-player actions, derived by diffing the recording player's own state frame-to-frame.
+    // --- Single-POV combat overlay (the recorder's own camera) ---
+    // The income breakdown (POV-only PLAYER_INCOME message), the POV fight's weather, and per-entity
+    // status/stat diffs are captured ONLY for the recorder's spectated fight (broadcastToSpectators /
+    // a POV client.send), so they stay single-POV and are tagged with the viewer uid. Generalising
+    // status/stats to every board is a later increment.
     const pov = viewerUid ? state.players?.get(viewerUid) : undefined
     if (pov) {
       // Resolve a deferred round-income breakdown now that this PICK frame's interest/streak have landed.
@@ -478,22 +834,6 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         if (base >= 5 && base % 5 === 0) incomeInfo[pendingIncome.idx] = { base, interest, streak }
         pendingIncome = null
       }
-      const money = pov.money
-      const level = pov.experienceManager?.level
-      // Region change — player.map is set to the portal's destination when one is taken (town → first
-      // region, then region → region). The initial "town" baseline isn't logged (first observed value).
-      const map = (pov as { map?: string }).map
-      if (povMap !== undefined && map && map !== povMap) {
-        actions.push({ t: f.t, type: "region", label: `Entered ${regionName(map)}` })
-      }
-      // Normal-synergy scarf: a crafted item put on a scarf slot (scarvesItems grows). It lands outside
-      // player.items, so the item-gain/craft diffs miss it. (A Fairy wand is NOT here — it resolves a
-      // proposition, already logged by the `pick` event with its alternatives.)
-      const scarves = pov.scarvesItems ? [...(pov.scarvesItems as Iterable<string>)] : []
-      if (povScarves) {
-        for (const x of multisetDiff(povScarves, scarves).added)
-          actions.push({ t: f.t, type: "artifact", label: `Scarf → ${prettyName(x)}` })
-      }
       // Weather — the POV's own fight starts with a weather (its simulation's weather); NEUTRAL = none.
       type TeamSchema = {
         forEach?: (cb: (e: Record<string, unknown>, id: string) => void) => void
@@ -503,8 +843,9 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         | undefined
       const weather = povSim?.weather
       if (weather && weather !== "NEUTRAL" && weather !== povWeather) {
-        actions.push({ t: f.t, type: "weather", label: `Weather: ${weatherName(weather)}` })
+        actions.push({ t: f.t, type: "weather", label: `Weather: ${weatherName(weather)}`, uid: viewerUid })
       }
+      povWeather = weather
       // Combat-entity status + stat changes in the POV's fight (both teams). Diff each unit vs its last
       // snapshot; reset on a new simulation (new round). A status flips false→true (poisonStacks ↑); a
       // buff stat changes value. Combat-volume → routed to the default-off Status/Stats categories.
@@ -523,9 +864,9 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           const was = prev?.status?.[k]
           if (k === "poisonStacks") {
             if (typeof cur === "number" && cur > 0 && cur !== was)
-              actions.push({ t: f.t, type: "status", label: `${nm} · Poisoned (${cur})` })
+              actions.push({ t: f.t, type: "status", label: `${nm} · Poisoned (${cur})`, uid: viewerUid })
           } else if (cur === true && was !== true) {
-            actions.push({ t: f.t, type: "status", label: `${nm} · ${statusName(k)}` })
+            actions.push({ t: f.t, type: "status", label: `${nm} · ${statusName(k)}`, uid: viewerUid })
           }
         }
         const statsSnap: Record<string, number> = {}
@@ -536,426 +877,29 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           const was = prev?.stats?.[k]
           if (was != null && cur !== was) {
             const d = cur - was
-            actions.push({ t: f.t, type: "stat", label: `${nm} ${STAT_LABEL[k]} ${d > 0 ? "+" : ""}${d}` })
+            actions.push({ t: f.t, type: "stat", label: `${nm} ${STAT_LABEL[k]} ${d > 0 ? "+" : ""}${d}`, uid: viewerUid })
           }
         }
         entityPrev.set(id, { status: statusSnap, stats: statsSnap })
       }
       povSim?.blueTeam?.forEach?.(scanEntity)
       povSim?.redTeam?.forEach?.(scanEntity)
-      const shop = pov.shop ? Array.from(pov.shop as ArrayLike<string>) : []
-      const board = new Map<string, string>()
-      // Per-unit item sets (pokemon.items is a SetSchema) + positions, captured this frame for the
-      // equip/unequip and positioning diffs below.
-      const unitItems = new Map<string, string[]>()
-      const unitPos = new Map<string, { x: number; y: number }>()
-      pov.board?.forEach((u, id) => {
-        board.set(id, u.name)
-        unitItems.set(id, u.items ? [...(u.items as Iterable<string>)] : [])
-        unitPos.set(id, { x: u.positionX ?? 0, y: u.positionY ?? 0 })
-      })
-      const choices = new Set<string>()
-      const choiceSlates = new Map<string, ChoiceSlate>()
-      pov.choices?.forEach((c) => {
-        choices.add(c.id)
-        choiceSlates.set(c.id, {
-          type: c.type,
-          pokemons: c.pokemons ? [...(c.pokemons as Iterable<string>)] : [],
-          items: c.items ? [...(c.items as Iterable<string>)] : []
-        })
-      })
-      // Choices resolved this frame: present last frame, gone now (the player picked → the choice left
-      // player.choices). Their snapshotted slate is what the pick was made FROM. Auto-pick on timeout can
-      // resolve several at once, so this is a list. Used below to enrich the pokemon/item pick labels.
-      const resolved = povChoices
-        ? [...povChoices].filter(([id]) => !choices.has(id)).map(([, slate]) => slate)
-        : []
-      const items = pov.items ? Array.from(pov.items as ArrayLike<string>) : []
-      const historyLen = pov.history?.length ?? 0
-      // Set by the board branch when a combined pokemon+item proposition is picked (the item is shown
-      // inline in the "Pokemon (Item)" pick label); the item branch then consumes it without re-logging.
-      let combinedPickItem: string | null = null
-
-      if (povBoard && povShop) {
-        const dMoney = typeof money === "number" && typeof povMoney === "number" ? money - povMoney : 0
-        const levelUpCost = getLevelUpCost(state.specialGameRule)
-        const added = [...board].filter(([id]) => !povBoard!.has(id))
-        const removed = [...povBoard].filter(([id]) => !board.has(id))
-        const choiceResolved = resolved.length > 0
-        // A pokemon proposition resolved this frame (starter / addPick / unique / legendary): match the
-        // chosen entry against the units that appeared on the board (a duo adds both its Pokémon) so we
-        // can show what it was picked OVER. null if we can't match the chosen entry to a board add
-        // (special-rule replacement) — the pick branch below then logs a generic "Picked <first added>".
-        // (If the pick added NOTHING — e.g. a bench-full proposition auto-sold on resolve — added.length
-        // is 0, so no pick event fires at all; that sell isn't traced back to the proposition.) Only the
-        // first pokemon slate is labelled here; two pokemon propositions co-resolving in one frame is not
-        // reachable in practice (their stages are disjoint), so it's not worth iterating.
-        const pokeSlate = resolved.find((s) => s.pokemons.length > 0)
-        let pokePickLabel: string | null = null
-        if (pokeSlate) {
-          const addedNames = new Set(added.map(([, n]) => n))
-          const chosenIdx = pokeSlate.pokemons.findIndex((p) =>
-            propositionConstituents(p).some((c) => addedNames.has(c))
-          )
-          if (chosenIdx >= 0) {
-            // addPick / unique-carousel slates pair a component with each pokemon (PlayerChoice.items[i]
-            // ↔ pokemons[i]); render those as "Pokemon (Item)" per option and remember the chosen item so
-            // the item-diff classification below doesn't double-log it. Pokemon-only slates (starter /
-            // legendary) have no items → just the names.
-            const withItems = pokeSlate.items.length > 0
-            const opt = (i: number) => {
-              const item = withItems && pokeSlate.items[i] ? ` (${prettyName(pokeSlate.items[i])})` : ""
-              return `${prettyProposition(pokeSlate.pokemons[i])}${item}`
-            }
-            const alts = pokeSlate.pokemons.map((_, i) => i).filter((i) => i !== chosenIdx).map(opt)
-            pokePickLabel = alts.length ? `Picked ${opt(chosenIdx)} over ${alts.join(", ")}` : `Picked ${opt(chosenIdx)}`
-            if (withItems && pokeSlate.items[chosenIdx]) combinedPickItem = pokeSlate.items[chosenIdx]
-          }
-        }
-        // Board changed this frame? A buy always does `player.board.set` (the bought unit lands on the
-        // bench); nothing else here that empties a shop slot touches the board.
-        const boardChanged = added.length > 0 || removed.length > 0 || board.size !== povBoard.size
-        // Slots cleared to Pkm.DEFAULT this frame. Two actions do this and ONLY these two:
-        //   • OnShopCommand (buy): deducts gold (0 in FREE_MARKET) AND board.set → board changes.
-        //   • OnRemoveFromShopCommand ("e"): clears the slot + locks the shop, never touches the board.
-        // So board-changed is the mode-independent discriminator (gold would misread a 0-cost buy).
-        const emptied: string[] = []
-        for (let s = 0; s < povShop.length && s < shop.length; s++) {
-          if (povShop[s] !== Pkm.DEFAULT && shop[s] === Pkm.DEFAULT) emptied.push(povShop[s])
-        }
-        // A reroll replaces slots with new non-empty values (buy/remove replace none → 0 refreshed);
-        // gating on !boardChanged keeps a board-touching action (e.g. an Unown buy that resets the
-        // whole shop) from reading as a roll.
-        const refreshed = shop.filter((s, k) => s !== povShop![k] && s !== Pkm.DEFAULT).length
-
-        // Evolution: a board churn where an added unit is the evolution of a removed one. Detected
-        // independently of the shop branch below — a 3-combine on BUY emits both a buy and an evolve.
-        // The evolution handlers delete the consumed copies and set one new evolved entity (count =
-        // 3-combine, plus item/hatch/money/placement/stack/state single-step evolves), so the diff is
-        // base(s) removed + evolved added. Verifying the relationship (vs labelling any remove+add an
-        // evolve) rejects a coincidental same-frame sell+buy.
-        if (added.length && removed.length) {
-          if (removed.some(([, n]) => n === Pkm.EGG)) {
-            // an egg was consumed and a pokemon appeared → it hatched
-            actions.push({ t: f.t, type: "hatch", label: `Hatched ${prettyName(added[0][1])}` })
-          } else {
-            let pair: [string, string] | undefined
-            for (const [, ev] of added) {
-              const base = removed.find(([, b]) => evolvesTo(b, ev))?.[1]
-              if (base) {
-                pair = [base, ev]
-                break
-              }
-            }
-            // Fallback for divergent / runtime-computed evolutions the static table doesn't map: 2+ copies
-            // of the SAME species consumed for one new unit is unambiguously a combine (a multi-sell has no
-            // added unit, so this can't be one).
-            if (!pair && added.length === 1) {
-              const counts = new Map<string, number>()
-              for (const [, b] of removed) counts.set(b, (counts.get(b) ?? 0) + 1)
-              const combinedBase = [...counts].find(([, n]) => n >= 2)?.[0]
-              if (combinedBase) pair = [combinedBase, added[0][1]]
-            }
-            if (pair) actions.push({ t: f.t, type: "evolve", label: `${prettyName(pair[0])} → ${prettyName(pair[1])}` })
-          }
-        }
-
-        // Priority so one underlying SHOP action emits one event.
-        if (emptied.length) {
-          const kind = boardChanged ? "buy" : "remove"
-          emptied.forEach((name) =>
-            actions.push({ t: f.t, type: kind, label: `${prettyName(name)}${kind === "buy" && emptied.length === 1 && dMoney < 0 ? ` (${goldStr(dMoney)})` : ""}` })
-          )
-        } else if (choiceResolved && added.length) {
-          actions.push({ t: f.t, type: "pick", label: pokePickLabel ?? `Picked ${prettyName(added[0][1])}` })
-        } else if (removed.length && !added.length && removed.length <= 3 && pov.alive !== false) {
-          // Sell — structural (a board unit leaves with no add and no shop-slot buy), so it's
-          // mode-independent (catches FREE_MARKET 0-gold sells). Eliminations don't clear the board
-          // (units are released to the pool but kept), so this can't fire on cleanup; the ≤3 cap and
-          // alive guard are belt-and-suspenders. Gold shown only when it changed.
-          actions.push({ t: f.t, type: "sell", label: `${prettyName(removed[0][1])}${dMoney > 0 ? ` (${goldStr(dMoney)})` : ""}` })
-        } else if (!boardChanged && refreshed >= REROLL_MIN_REFRESHED_SLOTS) {
-          // Player-paid reroll (gold spent) vs the automatic free refresh at the start of each stage.
-          actions.push({ t: f.t, type: "reroll", label: dMoney < 0 ? `Reroll (${goldStr(dMoney)})` : "Shop refresh" })
-        } else if (dMoney === -levelUpCost && !boardChanged && emptied.length === 0 && refreshed === 0) {
-          // Bought experience (OnLevelUpCommand: −levelUpCost gold, +4 XP) — the only spend that touches
-          // neither the board nor the shop. A buy-XP that levels up also emits the level event below.
-          actions.push({ t: f.t, type: "xp", label: `Bought 4 XP (${goldStr(dMoney)})` })
-        } else if (added.length && !removed.length) {
-          // A unit appeared on the bench with no buy/pick/evolution behind it: Baby synergy egg, Water
-          // synergy fish (spawnOnBench sets action=FISH), or some other free gain (wanderer catch, reward).
-          for (const [id, name] of added) {
-            if (name === Pkm.EGG) {
-              // The egg names what it will hatch into (egg.evolution, set at lay time — createRandomEgg)
-              // and whether it's a golden/shiny egg (egg.shiny). Both are synced @type fields.
-              const egg = pov.board.get(id) as { evolution?: string; shiny?: boolean } | undefined
-              const hatch = egg?.evolution && egg.evolution !== Pkm.DEFAULT ? prettyName(egg.evolution) : ""
-              const golden = egg?.shiny ? "golden " : ""
-              actions.push({ t: f.t, type: "egg", label: hatch ? `Laid ${golden}${hatch} egg` : "Laid an egg" })
-            } else if (pov.board.get(id)?.action === PokemonActionState.FISH) {
-              actions.push({ t: f.t, type: "fish", label: `Fished ${prettyName(name)}` })
-            } else {
-              actions.push({ t: f.t, type: "gained", label: `Gained ${prettyName(name)}` })
-            }
-          }
-        }
-        if (typeof level === "number" && typeof povLevel === "number" && level > povLevel) {
-          actions.push({ t: f.t, type: "level", label: `→ ${level}` })
-        }
-      }
-
-      // Round results — each new player.history entry is a resolved fight (win/loss/draw vs opponent).
-      if (povHistoryLen !== undefined && pov.history && historyLen > povHistoryLen) {
-        for (let h = povHistoryLen; h < historyLen; h++) {
-          const hi = pov.history.at(h)
-          if (hi) actions.push({ t: f.t, type: "round", label: roundLabel(hi.result, hi.name, !!(state as { shinyEncounter?: boolean }).shinyEncounter) })
-        }
-      }
-
-      // Item events — classify the player.items diff against this frame's per-unit pokemon.items
-      // movements, so a removal/addition is correctly read as an equip / unequip / on-unit craft / sell
-      // return rather than a bare "gained". Item flow between the player inventory and units:
-      //   • equip          (OnDragDropItemCommand): player.items loses X, the dropped unit gains X.
-      //   • on-unit craft  (OnDragDropItemCommand): a basic component C is dropped onto a unit already
-      //                     holding a component D → the unit's items go D→R (ItemRecipe[R]={C,D}) while
-      //                     player.items loses C. Distinct from the bench craft (player.items: 2→1).
-      //   • bench craft    (OnDragDropItemCommand): two components in player.items combine into a result.
-      //   • bench unequip  (onPokemonChangePosition, newY===0): RemovableItems on the unit return to
-      //                     player.items; the unit stays on the board (positionY→0). Detected
-      //                     structurally (unit loses X + player gains X, unit still present) — no need to
-      //                     hardcode the RemovableItems list, so it stays mode-independent (SLAMINGO too).
-      //   • sell return    (OnSellPokemonCommand): the unit is deleted and ALL its items return to
-      //                     player.items. These are NOT new gains — the sell event already fired, so we
-      //                     suppress them (don't emit "Got X").
-      //   • gained         (everything else): a player.items addition with no unit losing it and no
-      //                     craft behind it — pve/town rewards, synergy grants, abilities, dig, harvest…
-      // (Caveat: a Human-TM return on bench arrives via pokemon.tm, not pokemon.items, so it currently
-      // reads as a plain "gained" — a minor edge case not worth per-unit tm tracking.)
-      if (povItems !== undefined && povUnitItems !== undefined && povBoard) {
-        const { added: pAdded, removed: pRemoved } = multisetDiff(povItems, items)
-
-        // Per-unit item movements this frame, with the unit's (prettified) name — current board name,
-        // else the previous-frame name (a unit deleted this frame, e.g. a sell). `present` distinguishes
-        // a bench unequip (unit still on board) from a sell return (unit gone).
-        type UnitDelta = { id: string; name: string; item: string; present: boolean }
-        const uGained: UnitDelta[] = []
-        const uLost: UnitDelta[] = []
-        const ids = new Set<string>([...povUnitItems.keys(), ...unitItems.keys()])
-        for (const id of ids) {
-          const name = prettyName(board.get(id) ?? povBoard.get(id) ?? "")
-          const present = board.has(id)
-          const d = multisetDiff(povUnitItems.get(id) ?? [], unitItems.get(id) ?? [])
-          for (const it of d.added) uGained.push({ id, name, item: it, present })
-          for (const it of d.removed) uLost.push({ id, name, item: it, present })
-        }
-        const takeStr = (arr: string[], x: string): boolean => {
-          const k = arr.indexOf(x)
-          if (k < 0) return false
-          arr.splice(k, 1)
-          return true
-        }
-        const takeUnit = (arr: UnitDelta[], pred: (u: UnitDelta) => boolean): UnitDelta | undefined => {
-          const k = arr.findIndex(pred)
-          return k < 0 ? undefined : arr.splice(k, 1)[0]
-        }
-
-        // 0) Item proposition pick: a resolved choice whose slate is items (a component / synergy-item
-        //    offer). The chosen item entered player.items this frame — log it as a pick (showing what it
-        //    was chosen over) and consume it from pAdded so the gain/craft classification below skips it.
-        //    Run first so the picked item can't be misread as a craft result or a bare gain. (Wand offers
-        //    go to player.fairyWands, not player.items, so they don't surface here — out of scope.)
-        const itemSlate = resolved.find((s) => s.items.length > 0)
-        if (itemSlate) {
-          if (itemSlate.pokemons.length > 0) {
-            // Combined pokemon+item proposition: the picked pokemon AND its paired item were already
-            // logged as one "Pokemon (Item)" line in the board branch. Just consume the picked item from
-            // the gain diff so it isn't re-logged as a separate pick or a bare "Got X".
-            const chosen = combinedPickItem ?? itemSlate.items.find((it) => pAdded.includes(it))
-            if (chosen) takeStr(pAdded, chosen)
-          } else {
-            const chosen = itemSlate.items.find((it) => pAdded.includes(it))
-            if (chosen) {
-              takeStr(pAdded, chosen)
-              actions.push({
-                t: f.t,
-                type: "pick",
-                label: pickedOverLabel(prettyName(chosen), itemSlate.items.filter((it) => it !== chosen).map(prettyName))
-              })
-            }
-          }
-        }
-
-        // 1) On-unit craft: a unit gained result R and lost component D, player.items lost the other
-        //    component C, with ItemRecipe[R] = {C, D}. Run first so it consumes its parts (R, D, C).
-        for (let g = uGained.length - 1; g >= 0; g--) {
-          const R = uGained[g].item
-          const recipe = ItemRecipe[R as keyof typeof ItemRecipe]
-          if (!recipe || recipe.length !== 2) continue
-          const lostD = uLost.find((u) => u.id === uGained[g].id && (u.item === recipe[0] || u.item === recipe[1]))
-          if (!lostD) continue
-          const C = lostD.item === recipe[0] ? recipe[1] : recipe[0]
-          if (!pRemoved.includes(C)) continue
-          takeStr(pRemoved, C)
-          takeUnit(uLost, (u) => u === lostD)
-          actions.push({ t: f.t, type: "craft", label: `${prettyName(recipe[0])} + ${prettyName(recipe[1])} → ${prettyName(R)} on ${uGained[g].name}` })
-          uGained.splice(g, 1)
-        }
-
-        // 2) Bench craft (player.items only): a result enters and both its components leave player.items.
-        for (let a = pAdded.length - 1; a >= 0; a--) {
-          const recipe = ItemRecipe[pAdded[a] as keyof typeof ItemRecipe]
-          if (!recipe || recipe.length !== 2) continue
-          const i0 = pRemoved.indexOf(recipe[0])
-          if (i0 < 0) continue
-          const rest = [...pRemoved]
-          rest.splice(i0, 1)
-          if (rest.indexOf(recipe[1]) < 0) continue
-          pRemoved.splice(pRemoved.indexOf(recipe[0]), 1)
-          pRemoved.splice(pRemoved.indexOf(recipe[1]), 1)
-          actions.push({ t: f.t, type: "craft", label: `${prettyName(recipe[0])} + ${prettyName(recipe[1])} → ${prettyName(pAdded[a])}` })
-          pAdded.splice(a, 1)
-        }
-
-        // 3) Equip: player.items lost X and a unit gained X this frame.
-        for (let i = pRemoved.length - 1; i >= 0; i--) {
-          const u = takeUnit(uGained, (g) => g.item === pRemoved[i])
-          if (u) {
-            actions.push({ t: f.t, type: "equip", label: `Equipped ${prettyName(pRemoved[i])} on ${u.name}` })
-            pRemoved.splice(i, 1)
-          }
-        }
-
-        // 4) Remaining player.items additions: an unequip return (a still-present unit lost it), a sell
-        //    return (a deleted unit lost it → suppress; the sell already fired), else a genuine gain.
-        for (const x of pAdded) {
-          const u = takeUnit(uLost, (l) => l.item === x)
-          if (u) {
-            if (u.present) actions.push({ t: f.t, type: "unequip", label: `Unequipped ${prettyName(x)} from ${u.name}` })
-            // else: sold unit's item returning — folded into the sell event, not a gain.
-          } else {
-            actions.push({ t: f.t, type: "item", label: `Got ${prettyName(x)}` })
-          }
-        }
-      }
-
-      // Positioning — any board unit whose (positionX, positionY) changed: a deploy (bench→board),
-      // benching (board→bench), or a same-zone rearrange (Fighting's training cares about bench order).
-      // Very high-frequency, so it lives in its own "positioning" chip (default OFF, like Engine). Only
-      // units present in both frames qualify; a fresh buy/evolve has no prior position (handled above).
-      if (povUnitPos) {
-        unitPos.forEach((p, id) => {
-          const prev = povUnitPos!.get(id)
-          if (prev && (prev.x !== p.x || prev.y !== p.y)) {
-            actions.push({ t: f.t, type: "move", label: `${prettyName(board.get(id) ?? "")} → (${p.x},${p.y})` })
-          }
-        })
-      }
-
-      // Synergy thresholds — when player.synergies crosses a SynergyTriggers tier (e.g. Electric 3).
-      // The "step" is how many thresholds the current count meets (mirrors getSynergyStep); a step
-      // increase = a tier activated/upgraded. We label with the threshold VALUE that was reached
-      // (triggers[s]) so it reads as the in-game synergy bar ("Electric 3"). Counts are locked in prep
-      // (computeSynergies), so this never fires mid-combat. We only report increases — a downgrade from
-      // selling isn't an activation. (Terrain / Falinks effects live in player.effects, not synergies —
-      // they're board-driven battlefield states, out of scope for the synergy-tier event.)
-      const synSteps = new Map<string, number>()
-      pov.synergies?.forEach((count, syn) => {
-        const triggers = SynergyTriggers[syn as Synergy] ?? []
-        let step = 0
-        for (const t of triggers) if ((count ?? 0) >= t) step++
-        if (step > 0) synSteps.set(syn, step)
-      })
-      if (povSynSteps) {
-        synSteps.forEach((step, syn) => {
-          const prev = povSynSteps!.get(syn) ?? 0
-          if (step > prev) {
-            const triggers = SynergyTriggers[syn as Synergy] ?? []
-            for (let s = prev; s < step; s++) {
-              actions.push({ t: f.t, type: "synergy", label: `${prettyName(syn)} ${triggers[s]}` })
-            }
-          }
-        })
-      }
-
-      // --- Grass / Flora / wanderer events (UNVERIFIED off-source — the fixture runs none of these
-      // synergies; signals are source-cited, to be confirmed against a Grass/Flora/wanderer capture). ---
-
-      // Grass — a berry tree ripened (stage reached 3, harvestable). Picking it returns the berry to
-      // player.items (already caught as an item gain), so the ripen is the distinct, decoupled signal.
-      // berryTreesType[i] names the berry. A portal/region change zeroes stages (mini-game.ts) — a drop,
-      // not a ripen — so it never fires here. (OnPickBerryCommand / berry growth in game-commands.ts.)
-      const berryStages = pov.berryTreesStages ? Array.from(pov.berryTreesStages as ArrayLike<number>) : []
-      const berryTypes = pov.berryTreesType ? Array.from(pov.berryTreesType as ArrayLike<string>) : []
-      if (povBerryStages) {
-        for (let i = 0; i < berryStages.length; i++) {
-          if ((povBerryStages[i] ?? 0) < 3 && (berryStages[i] ?? 0) >= 3) {
-            actions.push({ t: f.t, type: "berry", label: `${prettyName(berryTypes[i] ?? "Berry")} ripe` })
-          }
-        }
-      }
-      // Berry-tree species set — repopulates on each portal (so this fires alongside a region change).
-      const species = berryTypes.filter(Boolean)
-      if (
-        povBerryTypes !== undefined &&
-        species.length > 0 &&
-        species.join() !== povBerryTypes.join()
-      ) {
-        actions.push({
-          t: f.t,
-          type: "berries",
-          label: `Berry trees: ${species.map((b) => prettyName(b).replace(" Berry", "")).join(", ")}`
-        })
-      }
-
-      // Flora — a flower in a pot evolved. flowerPots is seeded full at game start (initFlowerPots) and
-      // evolves in place (rich-mulch drop), so the discrete event is a slot's species changing to its
-      // evolution. (OnDragDropItemCommand flower-pot-zone in game-commands.ts.)
-      const flowers: string[] = []
-      pov.flowerPots?.forEach((p) => flowers.push(p?.name ?? ""))
-      if (povFlowers) {
-        for (let i = 0; i < flowers.length; i++) {
-          const prev = povFlowers[i]
-          if (prev && flowers[i] && prev !== flowers[i] && evolvesTo(prev, flowers[i])) {
-            actions.push({ t: f.t, type: "flower", label: `Flower → ${prettyName(flowers[i])}` })
-          }
-        }
-      }
-
-      // Wanderer — a catchable pokemon appeared (player.wanderers gains an entry, keyed by a fresh uuid;
-      // spawnWanderingPokemon in player.ts). Catching it adds a board unit (a "gained"); clears/catches
-      // delete keys. So new keys = appearances.
-      const wandererIds = new Set<string>()
-      const wandererPkm = new Map<string, string>()
-      pov.wanderers?.forEach((w, id) => {
-        wandererIds.add(id)
-        wandererPkm.set(id, (w as { pkm?: string })?.pkm ?? "")
-      })
-      if (povWandererIds) {
-        wandererIds.forEach((id) => {
-          if (!povWandererIds!.has(id)) {
-            actions.push({ t: f.t, type: "wanderer", label: `Wandering ${prettyName(wandererPkm.get(id) ?? "")}` })
-          }
-        })
-      }
-
-      povMoney = money
-      povLevel = level
-      povShop = shop
-      povBoard = board
-      povChoices = choiceSlates
-      povHistoryLen = historyLen
-      povItems = items
-      povUnitItems = unitItems
-      povUnitPos = unitPos
-      povSynSteps = synSteps
-      povBerryStages = berryStages
-      povFlowers = flowers
-      povWandererIds = wandererIds
-      povMap = map
-      povScarves = scarves
-      povWeather = weather
-      povBerryTypes = species
     }
+
+    // --- Per-player state-diff events (Tab 2 = everyone) ---
+    // The same board / economy / items / synergy / round / region / berry / flower / wanderer derivation,
+    // run for EVERY player and tagged with its uid. The shop-only signals (reroll / "remove" / buy-vs-
+    // gained) only fire for the POV, whose snapshot carries a populated shop. Combat (above) stays POV-only.
+    const deriveCtx: DeriveCtx = {
+      t: f.t,
+      specialGameRule: state.specialGameRule,
+      shinyEncounter: !!(state as { shinyEncounter?: boolean }).shinyEncounter
+    }
+    state.players?.forEach((p, uid) => {
+      const { events: playerEvents, snap } = derivePlayerStateEvents(p, prevByPlayer.get(uid), deriveCtx)
+      for (const e of playerEvents) actions.push({ t: e.t, type: e.type, label: e.label, uid })
+      prevByPlayer.set(uid, snap)
+    })
   }
 
   // The opening frames arrive during the loading screen, so the transcript starts on a phantom
@@ -979,6 +923,13 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     }
   }
 
+  // uid → in-game name, from the final reconstructed state (covers every player that appeared). Drives
+  // the per-player log column + the tab labels; names are stable, so the final-frame read is sufficient.
+  const playerNames: Record<string, string> = {}
+  ser.getState()?.players?.forEach((p, uid) => {
+    playerNames[uid] = p.name
+  })
+
   return {
     schemaVersion: REPLAY_INDEX_SCHEMA_VERSION,
     gameStartMs: origin,
@@ -990,7 +941,8 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     combatUnits,
     digInfo,
     incomeInfo,
-    foreignFrames
+    foreignFrames,
+    playerNames
   }
 }
 
