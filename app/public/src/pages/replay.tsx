@@ -157,9 +157,10 @@ export default function Replay() {
         )
       dispatch(leaveGame(undefined)) // arity-0 reducer; RTK types it as needing an (ignored) payload
       rooms.game = undefined
-      // Drop the dev/test hook so it can't retain the last ReplayRoom (+ its whole transcript) into the
-      // next live game.
+      // Drop the dev/test hooks so they can't retain the last ReplayRoom (+ its whole transcript) or the
+      // game scene into the next live game.
       delete (window as unknown as { __replayRoom?: ReplayRoom }).__replayRoom
+      delete (window as unknown as { __gameScene?: () => unknown }).__gameScene
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
