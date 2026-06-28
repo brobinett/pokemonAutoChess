@@ -300,6 +300,34 @@
   border-radius: 4px;
 }
 
+/* limitations blurb under the file picker — what client-side single-POV replays do/don't capture */
+.replay-limitations {
+  margin-top: 1em;
+  padding-top: 1em;
+  border-top: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  text-align: left;
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: var(--color-fg-secondary);
+  max-width: 42em;
+}
+.replay-limitations-title {
+  font-weight: 700;
+  color: var(--color-fg-primary);
+  margin-bottom: 0.4em;
+}
+.replay-limitations p {
+  margin: 0 0 0.5em;
+}
+.replay-limitations strong {
+  color: var(--color-fg-primary);
+  font-weight: 600;
+}
+.replay-limitations em {
+  font-style: normal;
+  color: var(--color-fg-accent);
+}
+
 /* spinner shown while loading / seeking */
 .replay-spinner {
   width: 30px;

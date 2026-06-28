@@ -592,6 +592,22 @@ function FilePicker({ onPick }: { onPick: (f: File) => void }) {
             />
           </label>
         </div>
+        <div className="replay-limitations">
+          <div className="replay-limitations-title">What a replay contains</div>
+          <p>
+            Replays are recorded from one player's point of view, in the browser. The recording player's
+            own game is captured in full. For everyone else, their boards, economy, synergies, items, round
+            results, and eliminations are reconstructed from shared game state.
+          </p>
+          <p>
+            Two things can't be captured for other players client-side: their <strong>shop rolls</strong>,
+            and their <strong>combat cast &amp; damage</strong> detail — only the recording player's own
+            fights carry ability / damage / heal (you still see other boards' unit buffs, statuses, and
+            field effects). The event log's <em>Recorded&nbsp;POV</em> tab is the perfect-information view;{" "}
+            <em>Everyone</em> is the best-effort view across all players. A disconnect during recording
+            leaves a short gap in that stretch.
+          </p>
+        </div>
       </div>
     </div>
   )
