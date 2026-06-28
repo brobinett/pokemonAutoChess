@@ -1,5 +1,6 @@
 import { Room, SchemaSerializer } from "@colyseus/sdk"
 import { rooms } from "../network"
+import { preference, subscribeToPreference } from "../preferences"
 import store from "../stores"
 import { type CapturedFrame, createFlushController } from "./recorder-flush-core"
 import type { ReplayWriterMeta } from "./opfs-replay-writer"
@@ -21,6 +22,16 @@ const stateCaptures = new WeakMap<object, CapturedFrame[]>() // serializer insta
 const msgCaptures = new WeakMap<object, CapturedFrame[]>() // room instance -> message frames
 let seq = 0
 let installed = false
+
+// Recording is opt-out: on by default, toggled off in the options panel (the `recordReplays` pref).
+// The SDK-prototype taps stay installed either way (they only ever wrap the live decode, best-effort),
+// but this flag gates whether a captured frame is actually buffered AND whether the periodic flush
+// runs — so toggling takes effect immediately, no reload. With it off from app start nothing is ever
+// captured, no OPFS file is opened, and the recording worker is never spawned. Kept in sync with the
+// preference in installRecorder(); seeded here so it's correct even before install. Turning it off
+// mid-game stops capture going forward (an already-running game keeps what it flushed); turning it on
+// mid-game can't recover the missed join handshake, so that game won't produce a playable replay.
+let recordingEnabled = preference("recordReplays")
 
 // Strong ref to the most recent game room so its captured frames survive after rooms.game is cleared
 // (e.g. on the after-game screen for the download). Tracked automatically from the taps below — no
@@ -191,7 +202,7 @@ export function installRecorder() {
       // (e.g. OOM under capture pressure) falls through to orig. The recorder sits in the live decode
       // hot path — this is the structural guard against the "additive code reaches into live" risk.
       try {
-        if (!isExcludedSerializer(this))
+        if (recordingEnabled && !isExcludedSerializer(this))
           push(stateCaptures, this, {
             t: Date.now(),
             seq: seq++,
@@ -218,8 +229,8 @@ export function installRecorder() {
     message: unknown
   ) {
     try {
-      if (rooms.game) lastGameRoom = rooms.game // retain the game room for the after-game download
-      if (!isExcludedRoom(this))
+      if (recordingEnabled && rooms.game) lastGameRoom = rooms.game // retain the game room for the after-game download
+      if (recordingEnabled && !isExcludedRoom(this))
         push(msgCaptures, this, {
           t: Date.now(),
           seq: seq++,
@@ -236,13 +247,20 @@ export function installRecorder() {
     return origDispatch.call(this, type, message)
   }
 
+  // Keep the capture gate in sync with the options-panel toggle (runInitially seeds it from the stored
+  // pref right now, before any game join).
+  subscribeToPreference("recordReplays", (v) => { recordingEnabled = v }, true)
+
   // Ask the browser to persist OPFS storage so a recording isn't evicted under storage pressure mid-game
   // (best effort; resolves false without throwing if not granted).
   void navigator.storage?.persist?.().catch(() => {})
 
   // Periodically flush the active game's frames to the recording worker so a crash can't lose them. The
-  // worker prunes old OPFS recordings itself when it opens a new game's file.
-  setInterval(() => void flushRoom(getActiveGameRoom()), FLUSH_MS)
+  // worker prunes old OPFS recordings itself when it opens a new game's file. Skipped while recording is
+  // off so a disabled recorder never spawns the worker or touches OPFS.
+  setInterval(() => {
+    if (recordingEnabled) void flushRoom(getActiveGameRoom())
+  }, FLUSH_MS)
 }
 
 /** Recording summary (durably-acked frame count + span) for the after-game indicator. From the controller's
