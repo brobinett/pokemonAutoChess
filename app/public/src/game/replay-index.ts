@@ -69,6 +69,9 @@ export type ReplayEventType =
   | "weather" // the POV's fight started with weather (its simulation's weather, ≠ NEUTRAL)
   | "berries" // the POV's berry-tree species repopulated (berryTreesType — changes on each region)
   | "rule" // a special game rule is in effect (state.specialGameRule — scribble modes; once, at start)
+  | "status" // a combat status flipped on for a unit in the POV's fight (burn/poison/freeze/… — entity.status)
+  | "stat" // a combat stat changed for a unit in the POV's fight (atk/speed/ap/… — entity stat field)
+  | "board" // a board effect appeared on a tile in the POV's fight (BOARD_EVENT broadcast)
   | "item" // an item entered player.items with no unit losing it (pve reward, town, synergy, dig…)
   | "craft" // components combined into a completed item (player.items bench-combine OR onto a unit)
   | "equip" // an item left player.items and landed on a board unit
@@ -194,6 +197,34 @@ const regionName = (map: string): string =>
 const weatherName = (w: string): string =>
   w === "BLOODMOON" ? "Blood Moon" : prettyName(w)
 
+// Combat-entity diff (status + stats). These are synced @type fields on each PokemonEntity (Status schema
+// + stat fields), not messages — so they're surfaced by diffing the POV simulation's units frame-to-frame.
+// All 37 status fields (the game's names look odd but each IS a status); poisonStacks is a counter, the
+// rest booleans (false→true = applied).
+const STATUS_FIELDS = [
+  "burn", "silence", "fatigue", "poisonStacks", "freeze", "protect", "sleep",
+  "confusion", "wound", "resurrection", "resurrecting", "paralysis", "pokerus",
+  "possessed", "locked", "blinded", "armorReduction", "runeProtect", "charm",
+  "flinch", "electricField", "psychicField", "grassField", "fairyField",
+  "spikeArmor", "magicBounce", "reflect", "light", "curse", "curseVulnerability",
+  "curseWeakness", "curseTorment", "curseFate", "enraged", "skydiving", "tree"
+] as const
+// Buff/debuff stats worth diffing (resource stats hp/pp/shield are excluded — covered by damage/heal/cast).
+const STAT_FIELDS = [
+  "atk", "def", "speDef", "ap", "speed", "range", "critChance", "critPower",
+  "luck", "maxHP", "maxPP"
+] as const
+const STAT_LABEL: Record<string, string> = {
+  atk: "ATK", def: "DEF", speDef: "Sp.DEF", ap: "AP", speed: "Speed",
+  range: "Range", critChance: "Crit%", critPower: "Crit Pow", luck: "Luck",
+  maxHP: "Max HP", maxPP: "Max PP"
+}
+// camelCase status field → readable label ("armorReduction" → "Armor Reduction"; poisonStacks handled inline).
+const statusName = (k: string): string => {
+  const s = k.replace(/([a-z])([A-Z])/g, "$1 $2")
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
 const b64ToBytes = (b64: string): Uint8Array =>
   Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
 
@@ -294,6 +325,13 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   let prevStage: number | undefined
   let prevTownEncounter: string | null | undefined // state.townEncounter (shared town NPC)
   let prevRule: string | null | undefined // state.specialGameRule (scribble mode; set once at start)
+  // Per-fight combat-entity tracking (status + stats). Reset when the POV's simulation changes (new round
+  // → new entities). entityPrev: entity id → its last status/stat snapshot.
+  let combatSimId: string | undefined
+  const entityPrev = new Map<
+    string,
+    { status: Record<string, unknown>; stats: Record<string, number> }
+  >()
   const lifePrev = new Map<string, number>()
   const eliminated = new Set<string>()
 
@@ -357,6 +395,11 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
             const site = digSite(ser.getState(), viewerUid, pid)
             if (site) digInfo[i] = site
           }
+        } else if (hasState && f.type === "BOARD_EVENT") {
+          // A board effect appeared on a tile; broadcast to all, so keep only the POV's own fight.
+          const simId = (f.payload as { simulationId?: string })?.simulationId
+          const povSim = ser.getState().players?.get(viewerUid)?.simulationId
+          if (simId && povSim && simId !== povSim) foreignFrames.push(i)
         }
       }
       // Round-income breakdown: PLAYER_INCOME (a POV-only client.send) carries just the total, but the
@@ -452,12 +495,54 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           actions.push({ t: f.t, type: "artifact", label: `Scarf → ${prettyName(x)}` })
       }
       // Weather — the POV's own fight starts with a weather (its simulation's weather); NEUTRAL = none.
-      const weather = (
-        state.simulations?.get(pov.simulationId) as { weather?: string } | undefined
-      )?.weather
+      type TeamSchema = {
+        forEach?: (cb: (e: Record<string, unknown>, id: string) => void) => void
+      }
+      const povSim = state.simulations?.get(pov.simulationId) as
+        | { weather?: string; blueTeam?: TeamSchema; redTeam?: TeamSchema }
+        | undefined
+      const weather = povSim?.weather
       if (weather && weather !== "NEUTRAL" && weather !== povWeather) {
         actions.push({ t: f.t, type: "weather", label: `Weather: ${weatherName(weather)}` })
       }
+      // Combat-entity status + stat changes in the POV's fight (both teams). Diff each unit vs its last
+      // snapshot; reset on a new simulation (new round). A status flips false→true (poisonStacks ↑); a
+      // buff stat changes value. Combat-volume → routed to the default-off Status/Stats categories.
+      if (combatSimId !== pov.simulationId) {
+        combatSimId = pov.simulationId
+        entityPrev.clear()
+      }
+      const scanEntity = (e: Record<string, unknown>, id: string) => {
+        const prev = entityPrev.get(id)
+        const nm = prettyName((e.name as string) ?? "")
+        const st = e.status as Record<string, unknown> | undefined
+        const statusSnap: Record<string, unknown> = {}
+        for (const k of STATUS_FIELDS) {
+          const cur = st?.[k]
+          statusSnap[k] = cur
+          const was = prev?.status?.[k]
+          if (k === "poisonStacks") {
+            if (typeof cur === "number" && cur > 0 && cur !== was)
+              actions.push({ t: f.t, type: "status", label: `${nm} · Poisoned (${cur})` })
+          } else if (cur === true && was !== true) {
+            actions.push({ t: f.t, type: "status", label: `${nm} · ${statusName(k)}` })
+          }
+        }
+        const statsSnap: Record<string, number> = {}
+        for (const k of STAT_FIELDS) {
+          const cur = e[k]
+          if (typeof cur !== "number") continue
+          statsSnap[k] = cur
+          const was = prev?.stats?.[k]
+          if (was != null && cur !== was) {
+            const d = cur - was
+            actions.push({ t: f.t, type: "stat", label: `${nm} ${STAT_LABEL[k]} ${d > 0 ? "+" : ""}${d}` })
+          }
+        }
+        entityPrev.set(id, { status: statusSnap, stats: statsSnap })
+      }
+      povSim?.blueTeam?.forEach?.(scanEntity)
+      povSim?.redTeam?.forEach?.(scanEntity)
       const shop = pov.shop ? Array.from(pov.shop as ArrayLike<string>) : []
       const board = new Map<string, string>()
       // Per-unit item sets (pokemon.items is a SetSchema) + positions, captured this frame for the
