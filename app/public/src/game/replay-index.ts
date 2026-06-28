@@ -333,9 +333,10 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           id?: string; positionX?: number; positionY?: number; targetX?: number; targetY?: number; x?: number; y?: number
         }
         if (f.type === "ABILITY") {
+          // Only the caster: the ABILITY target (targetX/Y) is the caster's attack-enemy by default, so
+          // it mis-names self/ally effects — the log drops it (the real target is the damage/heal row's).
           const caster = unitAt(state, pl?.id, pl?.positionX, pl?.positionY)
-          const target = unitAt(state, pl?.id, pl?.targetX, pl?.targetY)
-          if (caster || target) combatUnits[i] = { caster, target }
+          if (caster) combatUnits[i] = { caster }
         } else {
           const target = unitAt(state, pl?.id, pl?.x, pl?.y)
           if (target) combatUnits[i] = { target }

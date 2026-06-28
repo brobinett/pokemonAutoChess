@@ -8,9 +8,10 @@ import "./replay-event-log.css"
 //   ABILITY        → { id: simulationId, skill, positionX/Y (caster tile), targetX/Y (target tile) }
 //   POKEMON_DAMAGE → { index: ATTACKER species, amount, type (AttackType), x/y: victim tile }
 //   POKEMON_HEAL   → { index: HEALER  species, amount, type (HealType),  x/y: target tile }
-// Damage/heal name the SOURCE from the species `index` (→ PkmByIndex). Every payload identifies the
-// OTHER units only by tile, so the index resolves those tiles against the simulation positions (passed
-// in as `names`): the ABILITY caster + target, and the damage/heal target.
+// Damage/heal name the SOURCE from the species `index` (→ PkmByIndex) and the OTHER unit by tile (→
+// resolved against the simulation positions, passed in as `names`). The ABILITY caster is resolved the
+// same way; its targetX/Y is NOT used — broadcastAbility defaults it to the caster's attack-enemy, so it
+// lies for self/ally effects, and the real target is the adjacent damage/heal row's anyway.
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 // Default dock: right edge ~6vw from the screen edge (aligned under the DPS meter, which clears the
@@ -153,10 +154,13 @@ function summarize(type: string, payload: unknown, info?: FrameInfo): string {
   try {
     switch (type) {
       case "ABILITY": {
+        // No "→ target": broadcastAbility defaults targetX/Y to the caster's *attack-enemy*, so a
+        // self/ally effect (Grass Heal, Supercharge, a buff/heal ability…) would render "→ enemy". The
+        // real targets are carried correctly by the POKEMON_DAMAGE (victim) / POKEMON_HEAL (recipient)
+        // rows, so the cast row just says who cast what. (See the header note.)
         const o = p as { skill?: string; positionX?: number; positionY?: number }
         const skill = prettyName(o?.skill)
         const head = names?.caster ? `${prettyName(names.caster)} · ${skill}` : skill
-        if (names?.target) return `${head} → ${prettyName(names.target)}`
         return names?.caster || o?.positionX == null ? head : `${head} @(${o.positionX},${o.positionY})`
       }
       case "POKEMON_DAMAGE": {
