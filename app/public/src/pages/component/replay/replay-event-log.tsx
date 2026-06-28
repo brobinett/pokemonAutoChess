@@ -143,9 +143,18 @@ type LogEvent = {
   // town / rule); the "everyone" tab shows all players, labelled by name. Combat messages are the POV's
   // own fight (broadcastToSpectators), so they carry the viewer uid.
   uid?: string
+  // Optional sub-type for the fine-grained filter (the stat field / status name); absent → the `type`
+  // column IS the filterable granularity. `subKey()` below resolves the effective key either way.
+  key?: string
 }
 
+// The fine-grained filter operates on a per-category sub-type: the explicit `key` (stat field / status
+// name) when present, else the display `type` (ABILITY / BUY / …). Namespaced by category for the toggle set.
+const subKey = (e: { key?: string; type: string }) => e.key ?? e.type
+const subId = (cat: Category, sub: string) => `${cat}:${sub}`
+
 const TAB_KEY = "replay.eventlog.tab"
+const SUBOFF_KEY = "replay.eventlog.suboff" // sub-types explicitly turned off (within an enabled category)
 
 const fmt = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000))
@@ -274,6 +283,18 @@ export default function ReplayEventLog({
       return "pov"
     }
   })
+  // Fine-grained filter: sub-types explicitly turned off within their (still-enabled) category. Default
+  // empty → an enabled category shows all its sub-types. `expanded` is which category's drill-down is open.
+  const [subOff, setSubOff] = useState<Set<string>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SUBOFF_KEY) || "[]")
+      if (Array.isArray(saved)) return new Set<string>(saved)
+    } catch {
+      /* ignore */
+    }
+    return new Set<string>()
+  })
+  const [expanded, setExpanded] = useState<Category | null>(null)
   // Auto-follow the playhead (scroll the active row into view each tick). Off → the user can scroll the
   // log freely while playback continues in the background without being yanked back to the current event.
   // Re-enabling jumps back to the playhead. A manual wheel-scroll auto-unlocks (feels natural).
@@ -358,6 +379,15 @@ export default function ReplayEventLog({
     }
   }, [tab])
 
+  // persist the per-sub-type off-set
+  useEffect(() => {
+    try {
+      localStorage.setItem(SUBOFF_KEY, JSON.stringify([...subOff]))
+    } catch {
+      /* ignore */
+    }
+  }, [subOff])
+
   // restore the saved size + persist on resize. The CSS resize handle mutates the element directly;
   // a ResizeObserver writes the new size back so it survives a reload.
   useEffect(() => {
@@ -403,16 +433,32 @@ export default function ReplayEventLog({
     // Per-player actions → categories: shop/board management to Economy, synergy-driven gains to Synergy,
     // proposition picks to Match flow. The action's own uid carries the owning player (uid-less = the
     // game-level town/rule rows).
-    index?.actions.forEach((a) => out.push({ t: a.t, frame: -1, type: a.type.toUpperCase(), summary: a.label, cat: ACTION_CAT[a.type] ?? "economy", kind: a.type === "pick" ? "pick" : "action", uid: a.uid }))
+    index?.actions.forEach((a) => out.push({ t: a.t, frame: -1, type: a.type.toUpperCase(), summary: a.label, cat: ACTION_CAT[a.type] ?? "economy", kind: a.type === "pick" ? "pick" : "action", uid: a.uid, key: a.key }))
     return out.sort((a, b) => a.t - b.t || a.frame - b.frame)
   }, [room, index, viewerUid])
+
+  // Sub-types present per category (data-driven from the recording) → drives the per-category drill-down.
+  const subtypesByCat = useMemo(() => {
+    const m = new Map<Category, Set<string>>()
+    for (const e of events) {
+      if (!m.has(e.cat)) m.set(e.cat, new Set())
+      m.get(e.cat)!.add(subKey(e))
+    }
+    return m
+  }, [events])
 
   const base = index?.gameStartMs ?? 0
   // Tab + category filter. "pov" keeps only the recording player's events (uid === viewer) plus uid-less
   // game-level rows; "all" keeps everyone. Category chips apply within the active tab.
   const visible = useMemo(
-    () => events.filter((e) => enabled[e.cat] && (tab === "all" || e.uid == null || e.uid === viewerUid)),
-    [events, enabled, tab, viewerUid]
+    () =>
+      events.filter(
+        (e) =>
+          enabled[e.cat] &&
+          !subOff.has(subId(e.cat, subKey(e))) &&
+          (tab === "all" || e.uid == null || e.uid === viewerUid)
+      ),
+    [events, enabled, subOff, tab, viewerUid]
   )
 
   // The visible row at the playhead: the last one with t <= currentMs.
@@ -509,17 +555,58 @@ export default function ReplayEventLog({
         </button>
       </div>
       <div className="rel-filters">
-        {CATEGORIES.map((c) => (
-          <button
-            key={c.key}
-            className={`rel-chip rel-chip-${c.key}${enabled[c.key] ? " on" : ""}`}
-            title={`Toggle ${c.label} events`}
-            onClick={() => toggle(c.key)}
-          >
-            {c.label}
-          </button>
-        ))}
+        {CATEGORIES.map((c) => {
+          const drillable = (subtypesByCat.get(c.key)?.size ?? 0) > 1
+          return (
+            <span key={c.key} className="rel-chip-wrap">
+              <button
+                className={`rel-chip rel-chip-${c.key}${enabled[c.key] ? " on" : ""}`}
+                title={`Toggle ${c.label} events`}
+                onClick={() => toggle(c.key)}
+              >
+                {c.label}
+              </button>
+              {drillable && (
+                <button
+                  className={`rel-caret${expanded === c.key ? " open" : ""}`}
+                  title={`Filter individual ${c.label} types`}
+                  onClick={() => setExpanded((x) => (x === c.key ? null : c.key))}
+                >
+                  ▾
+                </button>
+              )}
+            </span>
+          )
+        })}
       </div>
+      {expanded && (
+        // Per-type drill-down for the expanded category: toggle individual sub-types (e.g. a single stat
+        // or status) without losing the rest. Data-driven from the recording; takes effect when the parent
+        // category is enabled. Sub-types are kept ON unless explicitly added to the off-set.
+        <div className="rel-subfilters">
+          {[...(subtypesByCat.get(expanded) ?? [])].sort().map((sub) => {
+            const id = subId(expanded, sub)
+            const on = !subOff.has(id)
+            return (
+              <button
+                key={id}
+                className={`rel-subchip${on ? " on" : ""}`}
+                title={`Toggle ${sub}`}
+                onClick={() =>
+                  setSubOff((s) => {
+                    const n = new Set(s)
+                    if (on) n.add(id)
+                    else n.delete(id)
+                    return n
+                  })
+                }
+              >
+                {sub}
+              </button>
+            )
+          })}
+        </div>
+      )}
       <div
         className="rel-list"
         ref={listRef}

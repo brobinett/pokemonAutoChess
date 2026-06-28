@@ -133,6 +133,10 @@ export interface ReplayEvent {
   type: ReplayEventType
   label: string
   uid?: string
+  // Optional sub-type within the event's category, for the fine-grained filter — the stat field
+  // ("Speed", "Shield") or status name ("Burn") for the stat/status firehose, which otherwise collapse
+  // into a single type. Absent for events whose `type` already IS the filterable granularity.
+  key?: string
 }
 export interface ReplayIndex {
   schemaVersion: number
@@ -864,9 +868,9 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           const was = prev?.status?.[k]
           if (k === "poisonStacks") {
             if (typeof cur === "number" && cur > 0 && cur !== was)
-              actions.push({ t: f.t, type: "status", label: `${nm} · Poisoned (${cur})`, uid: viewerUid })
+              actions.push({ t: f.t, type: "status", label: `${nm} · Poisoned (${cur})`, uid: viewerUid, key: "Poison" })
           } else if (cur === true && was !== true) {
-            actions.push({ t: f.t, type: "status", label: `${nm} · ${statusName(k)}`, uid: viewerUid })
+            actions.push({ t: f.t, type: "status", label: `${nm} · ${statusName(k)}`, uid: viewerUid, key: statusName(k) })
           }
         }
         const statsSnap: Record<string, number> = {}
@@ -877,7 +881,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           const was = prev?.stats?.[k]
           if (was != null && cur !== was) {
             const d = cur - was
-            actions.push({ t: f.t, type: "stat", label: `${nm} ${STAT_LABEL[k]} ${d > 0 ? "+" : ""}${d}`, uid: viewerUid })
+            actions.push({ t: f.t, type: "stat", label: `${nm} ${STAT_LABEL[k]} ${d > 0 ? "+" : ""}${d}`, uid: viewerUid, key: STAT_LABEL[k] })
           }
         }
         entityPrev.set(id, { status: statusSnap, stats: statsSnap })
