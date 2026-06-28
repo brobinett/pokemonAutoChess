@@ -143,6 +143,37 @@ export function encodeHeaderV1(manifest: {
   return w.done()
 }
 
+/** The metadata object stored in the v1 header (what encodeHeaderV1 wrote). */
+export interface ReplayHeaderMeta {
+  format: string
+  schemaVersion: number
+  game: { version: string; commit: string; serializerId: string }
+  room: string
+  viewerUid: string
+  recordedAt: string
+}
+
+/** Parse ONLY the v1 header (magic + version + length-prefixed metadata JSON) from the front of a
+ * `.colreplay` file, decoding no frames — used to list stored recordings cheaply (read a small prefix,
+ * show recordedAt / build / viewerUid without loading a multi-MB file). `bytes` may be a short prefix of
+ * the file. Returns null if it isn't a CLRP v1 file or the header isn't fully present / is corrupt; callers
+ * then fall back to the filename + mtime. */
+export function readReplayHeader(bytes: Uint8Array): ReplayHeaderMeta | null {
+  try {
+    if (bytes.length < 9) return null
+    for (let i = 0; i < MAGIC.length; i++) if (bytes[i] !== MAGIC[i]) return null
+    const r = new ByteReader(bytes)
+    for (let i = 0; i < MAGIC.length; i++) r.u8r() // magic
+    if (r.u8r() !== CONTAINER_V1) return null // container version
+    const metaLen = r.u32()
+    // The header must fit inside the bytes we were handed (the list path reads a generous prefix).
+    if (metaLen <= 0 || 9 + metaLen > bytes.length) return null
+    return JSON.parse(td.decode(r.bytes(metaLen))) as ReplayHeaderMeta
+  } catch {
+    return null
+  }
+}
+
 /** Encode ONE frame record for streaming append. `prevT` = the previous frame's t; pass null for the
  * first frame of a (re)opened file → tDelta 0 (a reconnect-after-reload segment continues from the file's
  * accumulated time, collapsing the disconnect gap — dead time anyway). Returns this frame's t. */

@@ -4,7 +4,11 @@ import { preference, subscribeToPreference } from "../preferences"
 import store from "../stores"
 import { type CapturedFrame, createFlushController } from "./recorder-flush-core"
 import type { ReplayWriterMeta } from "./opfs-replay-writer"
-import type { ReplayFrame } from "./replay-room"
+import type { ReplayFileInfo } from "./recorder-worker-core"
+import { loadReplay } from "./replay-format"
+import type { ReplayFrame, ReplayManifest } from "./replay-room"
+
+export type { ReplayFileInfo } from "./recorder-worker-core"
 
 // In-client match recorder. Taps the live client's own inbound Colyseus stream — the exact same seam
 // the headless harness recorder uses (replay/record-match.mjs) — and lets the player download the
@@ -72,8 +76,10 @@ const FLUSH_MS = 1000
 
 // --- the recording worker ---
 let worker: Worker | null = null
-let downloadSeq = 0
-const pendingDownloads = new Map<number, (r: { buf?: ArrayBuffer; error?: string }) => void>()
+let opSeq = 0
+// id -> resolver for a request/reply worker op (download / list / delete). Every such reply carries a
+// numeric `id`; the resolver reads the fields its op cares about (buf / files / error).
+const pendingOps = new Map<number, (r: { buf?: ArrayBuffer; files?: ReplayFileInfo[]; error?: string }) => void>()
 function getWorker(): Worker {
   if (!worker) {
     // recorder.worker.ts is built as its own esbuild entry to app/public/dist/client/recorder.worker.js
@@ -82,10 +88,10 @@ function getWorker(): Worker {
     worker = new Worker("/recorder.worker.js")
     worker.onmessage = (e: MessageEvent) => {
       const m = e.data
-      if (m?.type === "downloaded") {
-        const cb = pendingDownloads.get(m.id)
+      if (m?.type === "downloaded" || m?.type === "listed" || m?.type === "deleted") {
+        const cb = pendingOps.get(m.id)
         if (cb) {
-          pendingDownloads.delete(m.id)
+          pendingOps.delete(m.id)
           cb(m)
         }
       } else if (m?.type === "ack") {
@@ -96,14 +102,43 @@ function getWorker(): Worker {
     }
     worker.onerror = (e) => {
       console.error("[recorder] worker error", e.message)
-      // Fail any in-flight download so its button surfaces an error instead of hanging forever (e.g. the
-      // worker script 404s in a deploy, or it throws fatally).
-      for (const cb of pendingDownloads.values()) cb({ error: `recording worker error: ${e.message}` })
-      pendingDownloads.clear()
+      // Fail any in-flight op so its UI surfaces an error instead of hanging forever (e.g. the worker
+      // script 404s in a deploy, or it throws fatally).
+      for (const cb of pendingOps.values()) cb({ error: `recording worker error: ${e.message}` })
+      pendingOps.clear()
       controller.onWorkerError() // unblock any awaiting flush so the flush chain can't hang
     }
+    // Seed the retention cap the moment the worker exists (whoever spawned it — gameplay flush OR the
+    // library's list), BEFORE any frames, so the first new-game prune keeps the configured count. Sending
+    // it here (not at install) preserves the "recording off → worker never spawned" property.
+    worker.postMessage({ type: "config", keep: preference("keepReplays") })
   }
   return worker
+}
+
+/** Trigger a browser download of v1 `.colreplay` bytes (a stable filename derived from recordedAt). */
+function triggerBrowserDownload(buf: ArrayBuffer, recordedAt: string): void {
+  const blob = new Blob([buf], { type: "application/octet-stream" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `replay-${recordedAt.replace(/[:.]/g, "-")}.colreplay`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+/** Ask the worker for the whole on-disk `${roomId}.colreplay` (the active file via its sync handle, a
+ *  sealed one via a read-only getFile). Shared by Download and Watch. */
+function fetchReplayBytes(roomId: string): Promise<ArrayBuffer> {
+  const id = ++opSeq
+  return new Promise<ArrayBuffer>((resolve, reject) => {
+    pendingOps.set(id, (r) =>
+      r.error || !r.buf ? reject(new Error(r.error ?? "read failed")) : resolve(r.buf)
+    )
+    getWorker().postMessage({ type: "download", roomId, id })
+  })
 }
 
 const toReplayFrame = (f: CapturedFrame): ReplayFrame =>
@@ -251,6 +286,10 @@ export function installRecorder() {
   // pref right now, before any game join).
   subscribeToPreference("recordReplays", (v) => { recordingEnabled = v }, true)
 
+  // Keep the worker's retention cap in sync with the keepReplays pref. Only push when the worker already
+  // exists — don't spawn it just for a settings change (getWorker seeds the current value on spawn).
+  subscribeToPreference("keepReplays", (v) => { worker?.postMessage({ type: "config", keep: v }) }, false)
+
   // Ask the browser to persist OPFS storage so a recording isn't evicted under storage pressure mid-game
   // (best effort; resolves false without throwing if not granted).
   void navigator.storage?.persist?.().catch(() => {})
@@ -284,23 +323,48 @@ export async function downloadReplay(
 ): Promise<void> {
   if (!room || room.roomId === "replay") return
   await controller.drain(room.roomId) // persist + ack every captured frame before reading the file
-  const id = ++downloadSeq
-  const buf = await new Promise<ArrayBuffer>((resolve, reject) => {
-    pendingDownloads.set(id, (r) =>
-      r.error || !r.buf
-        ? reject(new Error(r.error ?? "download failed"))
-        : resolve(r.buf)
-    )
-    getWorker().postMessage({ type: "download", roomId: room.roomId, id })
-  })
-  const blob = new Blob([buf], { type: "application/octet-stream" })
+  const buf = await fetchReplayBytes(room.roomId)
   const recordedAt = controller.recordedAt(room.roomId) ?? new Date().toISOString()
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement("a")
-  a.href = url
-  a.download = `replay-${recordedAt.replace(/[:.]/g, "-")}.colreplay`
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(url)
+  triggerBrowserDownload(buf, recordedAt)
+}
+
+// --- the /replay library (list / watch / download / delete stored recordings) ----------------------
+
+/** List the recordings stored in OPFS, newest first, for the /replay library. Resolves [] if the worker
+ *  can't enumerate them (e.g. OPFS unavailable) — the library then just offers the external-file picker. */
+export function listReplays(): Promise<ReplayFileInfo[]> {
+  const id = ++opSeq
+  return new Promise<ReplayFileInfo[]>((resolve) => {
+    pendingOps.set(id, (r) => {
+      if (r.error) console.warn("[recorder] listReplays:", r.error)
+      resolve(r.files ?? [])
+    })
+    getWorker().postMessage({ type: "list", id })
+  })
+}
+
+/** Load a stored recording straight from OPFS into a manifest the viewer plays — the "Watch" path, no
+ *  manual file pick. */
+export async function loadStoredReplay(roomId: string): Promise<ReplayManifest> {
+  return loadReplay(await fetchReplayBytes(roomId))
+}
+
+/** Save a stored recording to the user's Downloads as a portable `.colreplay`. */
+export async function downloadStoredReplay(
+  roomId: string,
+  recordedAt: string | null
+): Promise<void> {
+  triggerBrowserDownload(
+    await fetchReplayBytes(roomId),
+    recordedAt ?? new Date().toISOString()
+  )
+}
+
+/** Delete a stored recording from OPFS. Rejects if it's the active recording or the remove fails. */
+export function deleteStoredReplay(roomId: string): Promise<void> {
+  const id = ++opSeq
+  return new Promise<void>((resolve, reject) => {
+    pendingOps.set(id, (r) => (r.error ? reject(new Error(r.error)) : resolve()))
+    getWorker().postMessage({ type: "delete", roomId, id })
+  })
 }

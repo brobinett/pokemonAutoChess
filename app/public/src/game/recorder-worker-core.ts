@@ -3,6 +3,7 @@ import {
   type ReplayFileHandle,
   type ReplayWriterMeta
 } from "./opfs-replay-writer"
+import { readReplayHeader } from "./replay-format"
 import type { ReplayFrame } from "./replay-room"
 
 // The pure logic of the recorder worker, factored out of the browser shell (recorder.worker.ts) so it can
@@ -17,6 +18,27 @@ export interface ReplayReadWriteHandle extends ReplayFileHandle {
   read(buffer: Uint8Array, opts?: { at?: number }): number
 }
 
+/** One raw stored-recording entry the shell hands the core for `list`: the filename stem, a generous
+ *  header-prefix read (the core parses it with readReplayHeader — no need to read whole multi-MB files),
+ *  and cheap file stats. */
+export interface RawReplayEntry {
+  roomId: string
+  header: Uint8Array
+  bytes: number
+  mtime: number
+}
+
+/** A stored recording, summarised for the library list. recordedAt/game/viewerUid come from the file
+ *  header when it parses; null when it doesn't (a foreign/corrupt file — still listable by mtime + size). */
+export interface ReplayFileInfo {
+  roomId: string
+  recordedAt: string | null
+  mtime: number
+  bytes: number
+  game: { version: string; commit: string } | null
+  viewerUid: string | null
+}
+
 export interface WorkerDeps {
   /** Open (creating if needed) the OPFS file for `roomId` and return its sync handle. A reconnect after a
    *  reload reopens the SAME file → non-empty → ReplayFileWriter appends. */
@@ -27,6 +49,11 @@ export interface WorkerDeps {
   readFile?(roomId: string): Promise<Uint8Array | null>
   /** Keep the `keep` most-recent recordings plus `protect` (the in-progress one), deleting the rest. */
   prune?(keep: number, protect: string): Promise<void>
+  /** Enumerate stored recordings (filename stem + header-prefix read + size + mtime), any order — the core
+   *  sorts. Optional (older shells / tests may omit it). */
+  list?(): Promise<RawReplayEntry[]>
+  /** Delete the stored `${roomId}.colreplay`. Optional. */
+  remove?(roomId: string): Promise<void>
   /** Post a message back to the main thread (with optional transferables). */
   post(message: unknown, transfer?: Transferable[]): void
 }
@@ -35,13 +62,38 @@ export type RecorderInMessage =
   | { type: "frames"; roomId: string; meta: ReplayWriterMeta; frames: ReplayFrame[]; batchId?: number }
   | { type: "flush" }
   | { type: "download"; roomId: string; id: number }
+  | { type: "list"; id: number }
+  | { type: "delete"; roomId: string; id: number }
+  | { type: "config"; keep: number }
   | { type: "close" }
 
-const KEEP_RECENT = 2
+// How many SEALED recordings survive a new-game prune (plus the in-progress one, always protected). The
+// default; the main thread overrides it from the `keepReplays` preference via a "config" message.
+const DEFAULT_KEEP_RECENT = 2
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e)
 
+/** Parse a raw entry's header into the list summary; foreign/corrupt headers degrade to nulls (still
+ *  listed, orderable by mtime, deletable). */
+function summariseEntry(e: RawReplayEntry): ReplayFileInfo {
+  const meta = readReplayHeader(e.header)
+  return {
+    roomId: e.roomId,
+    recordedAt: meta?.recordedAt ?? null,
+    mtime: e.mtime,
+    bytes: e.bytes,
+    game: meta ? { version: meta.game.version, commit: meta.game.commit } : null,
+    viewerUid: meta?.viewerUid ?? null
+  }
+}
+
+/** Newest-first sort key: the header's recordedAt when parseable, else the file mtime. */
+const sortKey = (f: ReplayFileInfo): number =>
+  (f.recordedAt ? Date.parse(f.recordedAt) : Number.NaN) || f.mtime
+
 export function createRecorderWorker(deps: WorkerDeps) {
+  // How many sealed recordings to keep on a new-game prune; overridden by a "config" message.
+  let keepRecent = DEFAULT_KEEP_RECENT
   let current: {
     roomId: string
     handle: ReplayReadWriteHandle
@@ -78,7 +130,7 @@ export function createRecorderWorker(deps: WorkerDeps) {
       throw e
     }
     current = { roomId, handle, writer, lastBatchId: 0 }
-    if (deps.prune) await deps.prune(KEEP_RECENT, roomId)
+    if (deps.prune) await deps.prune(keepRecent, roomId)
   }
 
   /** Process one inbound message. Caller MUST serialize calls (await each before the next) so the async
@@ -150,6 +202,38 @@ export function createRecorderWorker(deps: WorkerDeps) {
           }
         } catch (e) {
           deps.post({ type: "downloaded", id: msg.id, error: errMsg(e) })
+        }
+        break
+      }
+      case "config":
+        // Clamp to >= 1: a 0 would prune away the game that just finished. The active recording is always
+        // protected separately, so `keep` only governs how many SEALED files survive a new-game prune.
+        keepRecent = Math.max(1, Math.floor(msg.keep))
+        break
+      case "list": {
+        // Enumerate stored recordings for the library. Always replies (even on enumeration failure / no
+        // OPFS) so the main-thread promise can't hang; an empty list is a valid answer.
+        try {
+          const raw = deps.list ? await deps.list() : []
+          const files = raw.map(summariseEntry).sort((a, b) => sortKey(b) - sortKey(a))
+          deps.post({ type: "listed", id: msg.id, files })
+        } catch (e) {
+          deps.post({ type: "listed", id: msg.id, files: [], error: errMsg(e) })
+        }
+        break
+      }
+      case "delete": {
+        // Never delete the file we're actively writing — that would orphan the open sync handle and lose the
+        // in-progress recording. (The library only lists/deletes sealed files, but guard defensively.)
+        if (current?.roomId === msg.roomId) {
+          deps.post({ type: "deleted", id: msg.id, error: "cannot delete the active recording" })
+          break
+        }
+        try {
+          if (deps.remove) await deps.remove(msg.roomId)
+          deps.post({ type: "deleted", id: msg.id, roomId: msg.roomId })
+        } catch (e) {
+          deps.post({ type: "deleted", id: msg.id, error: errMsg(e) })
         }
         break
       }

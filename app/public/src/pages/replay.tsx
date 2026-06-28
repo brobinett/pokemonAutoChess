@@ -12,10 +12,18 @@ import {
   prevStage,
   type ReplayIndex
 } from "../game/replay-index"
+import {
+  deleteStoredReplay,
+  downloadStoredReplay,
+  listReplays,
+  loadStoredReplay,
+  type ReplayFileInfo
+} from "../game/recorder"
 import { loadReplay } from "../game/replay-format"
 import { ReplayRoom, type ReplayManifest } from "../game/replay-room"
 import { useAppDispatch, useAppSelector } from "../hooks"
 import { rooms } from "../network"
+import { usePreference } from "../preferences"
 import { leaveGame, setPlayer } from "../stores/GameStore"
 import { logIn } from "../stores/NetworkStore"
 import ReplayControls from "./component/replay/replay-controls"
@@ -462,16 +470,6 @@ export default function Replay() {
     }
   }, [ready, seekEpoch])
 
-  const pick = (f: File) => {
-    // Swap the file picker for the "Loading replay" spinner BEFORE reading the file, so the spinner (not a
-    // frozen picker) is what's on screen while the synchronous index build runs. The arrayBuffer() read is
-    // async I/O, which gives React a chance to paint the spinner before the build blocks the main thread.
-    setNeedFile(false)
-    f.arrayBuffer()
-      .then((buf) => loadManifest(loadReplay(buf)))
-      .catch((e) => setError(String(e?.message ?? e)))
-  }
-
   if (error)
     return (
       <div className="replay-overlay">
@@ -481,7 +479,17 @@ export default function Replay() {
         </div>
       </div>
     )
-  if (needFile && !ready) return <FilePicker onPick={pick} />
+  if (needFile && !ready)
+    return (
+      <ReplayLibrary
+        // Swap the library for the "Loading replay" spinner BEFORE the (async) read, so the spinner — not a
+        // frozen library — is on screen while the synchronous index build runs. The async read gives React a
+        // chance to paint the spinner before the build blocks the main thread.
+        onLoadStart={() => setNeedFile(false)}
+        onManifest={loadManifest}
+        onError={(msg) => setError(msg)}
+      />
+    )
   if (!ready)
     return (
       <div className="replay-overlay">
@@ -566,12 +574,78 @@ function ReplayGameHost() {
   return <Game />
 }
 
-function FilePicker({ onPick }: { onPick: (f: File) => void }) {
-  const [over, setOver] = useState(false)
+// Format a stored recording's timestamp for a list row: the header's recordedAt when present, else the
+// file's mtime. Both are wall-clock instants shown in the viewer's locale.
+function formatWhen(f: ReplayFileInfo): string {
+  const ms = f.recordedAt ? Date.parse(f.recordedAt) : Number.NaN
+  return new Date(Number.isFinite(ms) ? ms : f.mtime).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  })
+}
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${bytes} B`
+}
+
+// The /replay landing screen: a library of recordings stored in this browser (OPFS) plus the option to
+// open an external `.colreplay` file. Each stored row can be Watched (loaded straight from OPFS — no
+// manual file pick), Downloaded (to a portable file), or Deleted. A "keep most recent N" control edits the
+// retention pref the recorder's new-game prune honors. onLoadStart fires the parent's spinner before a
+// load; onManifest hands the parent a loaded manifest to boot; onError surfaces a failure.
+function ReplayLibrary({
+  onLoadStart,
+  onManifest,
+  onError
+}: {
+  onLoadStart: () => void
+  onManifest: (m: ReplayManifest) => void
+  onError: (msg: string) => void
+}) {
+  const [files, setFiles] = useState<ReplayFileInfo[] | null>(null) // null = still listing
+  const [busy, setBusy] = useState(false) // a watch/download is in flight — disable row actions
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null) // roomId pending inline confirm
+  const [over, setOver] = useState(false) // drag-over highlight for the external-file dropzone
+  const [keep, setKeep] = usePreference("keepReplays")
+  const [recording] = usePreference("recordReplays")
+  const fail = (e: unknown) => onError(String((e as Error)?.message ?? e))
+
+  const refresh = () =>
+    listReplays()
+      .then(setFiles)
+      .catch(() => setFiles([]))
+  useEffect(() => {
+    void refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const watchStored = (roomId: string) => {
+    onLoadStart()
+    loadStoredReplay(roomId).then(onManifest).catch(fail)
+  }
+  const watchFile = (f: File) => {
+    onLoadStart()
+    f.arrayBuffer()
+      .then((b) => onManifest(loadReplay(b)))
+      .catch(fail)
+  }
+  const download = (f: ReplayFileInfo) => {
+    setBusy(true)
+    downloadStoredReplay(f.roomId, f.recordedAt)
+      .catch(fail)
+      .finally(() => setBusy(false))
+  }
+  const remove = (roomId: string) => {
+    setConfirmDelete(null)
+    deleteStoredReplay(roomId).then(refresh).catch(fail)
+  }
+
   return (
     <div className="replay-overlay">
       <div
-        className="my-container replay-overlay-card"
+        className="my-container replay-overlay-card replay-library-card"
         onDragOver={(e) => {
           e.preventDefault()
           setOver(true)
@@ -581,13 +655,105 @@ function FilePicker({ onPick }: { onPick: (f: File) => void }) {
           e.preventDefault()
           setOver(false)
           const f = e.dataTransfer.files?.[0]
-          if (f) onPick(f)
+          if (f) watchFile(f)
         }}
       >
         <div className="replay-overlay-title">Watch a replay</div>
+
+        <div className="replay-library">
+          <div className="replay-library-head">
+            <span className="replay-library-label">Saved in this browser</span>
+            <label className="replay-keep">
+              Keep&nbsp;
+              <select
+                value={keep}
+                onChange={(e) => setKeep(Number(e.target.value))}
+              >
+                {[1, 2, 3, 5, 10, 20].map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+              &nbsp;most recent
+            </label>
+          </div>
+
+          {files === null ? (
+            <div className="replay-library-empty">Loading saved replays…</div>
+          ) : files.length === 0 ? (
+            <div className="replay-library-empty">
+              No replays are saved in this browser yet.{" "}
+              {recording
+                ? "They'll appear here after you finish a game."
+                : "Recording is currently off — turn it on in Options."}
+            </div>
+          ) : (
+            <ul className="replay-library-list">
+              {files.map((f) => (
+                <li key={f.roomId} className="replay-row">
+                  <div className="replay-row-info">
+                    <span className="replay-row-when">{formatWhen(f)}</span>
+                    <span className="replay-row-meta">
+                      {formatSize(f.bytes)}
+                      {f.game ? ` · ${f.game.version}` : ""}
+                    </span>
+                  </div>
+                  {confirmDelete === f.roomId ? (
+                    <div className="replay-row-actions">
+                      <span className="replay-confirm-q">Delete?</span>
+                      <button
+                        className="bubbly red replay-row-btn"
+                        onClick={() => remove(f.roomId)}
+                      >
+                        Yes
+                      </button>
+                      <button
+                        className="bubbly replay-row-btn"
+                        onClick={() => setConfirmDelete(null)}
+                      >
+                        No
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="replay-row-actions">
+                      <button
+                        className="bubbly blue replay-row-btn"
+                        disabled={busy}
+                        onClick={() => watchStored(f.roomId)}
+                      >
+                        ▶ Watch
+                      </button>
+                      <button
+                        className="bubbly replay-row-btn"
+                        disabled={busy}
+                        title="Download to your computer"
+                        onClick={() => download(f)}
+                      >
+                        ⬇
+                      </button>
+                      <button
+                        className="bubbly replay-row-btn"
+                        title="Delete from this browser"
+                        onClick={() => setConfirmDelete(f.roomId)}
+                      >
+                        🗑
+                      </button>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="replay-keep-hint">
+            Older replays are removed automatically when you start a new game. Download any you want to keep
+            — a downloaded file is permanent and shareable.
+          </p>
+        </div>
+
         <div className={`replay-dropzone${over ? " over" : ""}`}>
           <div className="replay-overlay-sub">
-            Drop a <code>.colreplay.json</code> file here, or choose one:
+            Or open a <code>.colreplay</code> file from your computer:
           </div>
           <label className="bubbly blue replay-file-label">
             Choose a file
@@ -596,25 +762,28 @@ function FilePicker({ onPick }: { onPick: (f: File) => void }) {
               accept=".json,.colreplay,application/json"
               onChange={(e) => {
                 const f = e.target.files?.[0]
-                if (f) onPick(f)
+                if (f) watchFile(f)
               }}
             />
           </label>
         </div>
+
         <div className="replay-limitations">
-          <div className="replay-limitations-title">What a replay contains</div>
+          <div className="replay-limitations-title">About replays</div>
           <p>
-            Replays are recorded from one player's point of view, in the browser. The recording player's
-            own game is captured in full. For everyone else, their boards, economy, synergies, items, round
-            results, and eliminations are reconstructed from shared game state.
+            Replays are saved <strong>in this browser, on this device only</strong> — they aren't
+            cloud-saved, backed up, or shared across devices or browsers. Clearing your browser's site data
+            deletes them, and replays recorded in a private / incognito window disappear when you close it.
+            Download the ones you want to keep.
           </p>
           <p>
-            Two things can't be captured for other players client-side: their <strong>shop rolls</strong>,
-            and their <strong>combat cast &amp; damage</strong> detail — only the recording player's own
-            fights carry ability / damage / heal (you still see other boards' unit buffs, statuses, and
-            field effects). The event log's <em>Recorded&nbsp;POV</em> tab is the perfect-information view;{" "}
-            <em>Everyone</em> is the best-effort view across all players. A disconnect during recording
-            leaves a short gap in that stretch.
+            A replay is recorded from one player's point of view. That player's own game is captured in
+            full; for everyone else, boards, economy, synergies, items, round results, and eliminations are
+            reconstructed from shared game state. Two things can't be captured for other players: their{" "}
+            <strong>shop rolls</strong> and their <strong>combat cast &amp; damage</strong> detail (you
+            still see other boards' unit buffs, statuses, and field effects). In the event log,{" "}
+            <em>Recorded&nbsp;POV</em> is the perfect-information view and <em>Everyone</em> is the
+            best-effort view across all players. A disconnect during recording leaves a short gap.
           </p>
         </div>
       </div>

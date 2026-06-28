@@ -368,3 +368,106 @@
 .replay-file-label input[type="file"] {
   display: none;
 }
+
+/* replays library: the list of recordings stored in this browser (OPFS), each with watch/download/delete,
+   plus a "keep most recent N" retention control. Wider than the bare picker card to fit the rows. */
+.replay-library-card {
+  max-width: 600px;
+  width: min(600px, 92vw);
+}
+.replay-library {
+  width: 100%;
+  text-align: left;
+}
+.replay-library-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  margin-bottom: 0.5em;
+}
+.replay-library-label {
+  font-weight: 700;
+  color: var(--color-fg-primary);
+}
+.replay-keep {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.82em;
+  color: var(--color-fg-secondary);
+  white-space: nowrap;
+}
+.replay-keep select {
+  background: var(--color-bg-input);
+  color: var(--color-fg-primary);
+  border: 1px solid var(--color-bg-tertiary);
+  border-radius: 6px;
+  padding: 0.15em 0.3em;
+  cursor: var(--cursor-hover);
+}
+.replay-library-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.replay-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8em;
+  padding: 0.45em 0.65em;
+  background: var(--color-bg-input);
+  border-radius: 8px;
+}
+.replay-row-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.replay-row-when {
+  font-weight: 600;
+  font-size: 0.9em;
+  color: var(--color-fg-primary);
+}
+.replay-row-meta {
+  font-size: 0.76em;
+  color: var(--color-fg-secondary);
+}
+.replay-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  flex-shrink: 0;
+}
+.replay-confirm-q {
+  font-size: 0.82em;
+  color: var(--color-fg-secondary);
+}
+/* compact the chunky .bubbly buttons down to row size (specificity beats the base .bubbly rule) */
+.replay-row .bubbly {
+  padding: 0.25em 0.6em;
+  font-size: 0.82em;
+  min-width: 0;
+  margin: 0;
+}
+.replay-row .bubbly:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.replay-library-empty {
+  padding: 1em 0.5em;
+  text-align: center;
+  font-size: 0.9em;
+  color: var(--color-fg-secondary);
+}
+.replay-keep-hint {
+  margin: 0.6em 0 0;
+  font-size: 0.78em;
+  line-height: 1.45;
+  color: var(--color-fg-secondary);
+}

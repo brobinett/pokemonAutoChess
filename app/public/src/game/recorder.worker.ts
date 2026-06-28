@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import {
   createRecorderWorker,
+  type RawReplayEntry,
   type ReplayReadWriteHandle
 } from "./recorder-worker-core"
 
@@ -43,6 +44,38 @@ const core = createRecorderWorker({
     }
     const file = await fh.getFile()
     return new Uint8Array(await file.arrayBuffer())
+  },
+  async list(): Promise<RawReplayEntry[]> {
+    // Enumerate every stored recording for the library. Read only a generous header PREFIX of each file
+    // (the metadata JSON is a few hundred bytes — never the whole multi-MB recording); the core parses it.
+    const HEADER_PREFIX = 16384
+    const dir = await replaysDir()
+    const out: RawReplayEntry[] = []
+    const iter = dir as unknown as {
+      entries(): AsyncIterable<[string, FileSystemHandle]>
+    }
+    for await (const [name, handle] of iter.entries()) {
+      if (!name.endsWith(".colreplay") || handle.kind !== "file") continue
+      try {
+        const file = await (handle as FileSystemFileHandle).getFile()
+        const header = new Uint8Array(
+          await file.slice(0, HEADER_PREFIX).arrayBuffer()
+        )
+        out.push({
+          roomId: name.slice(0, -".colreplay".length),
+          header,
+          bytes: file.size,
+          mtime: file.lastModified
+        })
+      } catch {
+        // a file held open by the active sync handle may be unreadable here — skip it (lists next time)
+      }
+    }
+    return out
+  },
+  async remove(roomId): Promise<void> {
+    const dir = await replaysDir()
+    await dir.removeEntry(`${roomId}.colreplay`)
   },
   async prune(keep, protect) {
     const dir = await replaysDir()

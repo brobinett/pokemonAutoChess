@@ -43,6 +43,7 @@ export interface IPreferencesState {
   antialiasing: boolean
   colorblindMode: boolean
   recordReplays: boolean
+  keepReplays: number
   theme: string
 }
 
@@ -72,6 +73,7 @@ const defaultPreferences: IPreferencesState = {
   antialiasing: true,
   colorblindMode: false,
   recordReplays: true,
+  keepReplays: 5,
   theme: "default",
   keybindings: {
     sell: "E",
