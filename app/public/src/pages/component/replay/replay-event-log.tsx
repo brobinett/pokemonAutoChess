@@ -37,7 +37,7 @@ const DEFAULT_RIGHT = "6vw"
 // ReplayRoom already holds, plus the shared useDraggable hook the game's other windows use — no effect
 // on live play. The panel is draggable (by its header) and resizable (CSS resize handle).
 
-type Category = "combat" | "economy" | "items" | "flow" | "synergy" | "flavor" | "positioning" | "engine" | "status" | "stats" | "board"
+type Category = "combat" | "economy" | "items" | "flow" | "synergy" | "flavor" | "positioning" | "engine" | "status" | "stats"
 
 // Server→client message type → category. The full set was traced from the game source (every
 // broadcast / client.send / broadcastToSpectators reachable inside a game room). Unmapped types fall
@@ -61,8 +61,9 @@ const CATEGORY_OF: Record<string, Category> = {
   // flavor — cosmetic chatter
   SHOW_EMOTE: "flavor",
   NPC_DIALOG: "flavor",
-  // board effects — a tile hazard/field appeared in the POV's fight (POV-scoped in replay-index)
-  BOARD_EVENT: "board",
+  // board effect — a tile hazard/field appeared in the POV's fight (POV-scoped in replay-index); a combat
+  // event, so it rides the Combat chip rather than its own.
+  BOARD_EVENT: "combat",
   // engine / internal — board-sim bookkeeping + renderer setup + rare system/error frames (off by default)
   CLEAR_BOARD_EVENT: "engine", // the paired "expired/cleared" firehose (480–2309/game) — stays engine
   CLEAR_BOARD: "engine",
@@ -78,7 +79,6 @@ const CATEGORIES: { key: Category; label: string }[] = [
   { key: "combat", label: "Combat" },
   { key: "status", label: "Status" },
   { key: "stats", label: "Stats" },
-  { key: "board", label: "Board" },
   { key: "economy", label: "Economy" },
   { key: "items", label: "Items" },
   { key: "flow", label: "Match flow" },
@@ -91,8 +91,7 @@ const CATEGORIES: { key: Category; label: string }[] = [
 const DEFAULT_ON: Record<Category, boolean> = {
   combat: false, // ~92% of all rows (per-tick ability/damage/heal) — buries the match story; opt-in
   status: false, // combat status effects (burn/poison/freeze/…) — combat-volume, opt-in
-  stats: false, // combat stat changes (atk/speed/ap/…) — a firehose, opt-in
-  board: false, // board effects on tiles (ember/sticky web/…) — combat detail, opt-in
+  stats: false, // combat stat changes (atk/speed/ap/hp/…) — a firehose, opt-in
   economy: true,
   items: true,
   flow: true,

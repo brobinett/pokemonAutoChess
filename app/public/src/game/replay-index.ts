@@ -70,8 +70,7 @@ export type ReplayEventType =
   | "berries" // the POV's berry-tree species repopulated (berryTreesType — changes on each region)
   | "rule" // a special game rule is in effect (state.specialGameRule — scribble modes; once, at start)
   | "status" // a combat status flipped on for a unit in the POV's fight (burn/poison/freeze/… — entity.status)
-  | "stat" // a combat stat changed for a unit in the POV's fight (atk/speed/ap/… — entity stat field)
-  | "board" // a board effect appeared on a tile in the POV's fight (BOARD_EVENT broadcast)
+  | "stat" // a combat stat changed for a unit in the POV's fight (atk/speed/ap/hp/… — entity stat field)
   | "item" // an item entered player.items with no unit losing it (pve reward, town, synergy, dig…)
   | "craft" // components combined into a completed item (player.items bench-combine OR onto a unit)
   | "equip" // an item left player.items and landed on a board unit
@@ -209,15 +208,16 @@ const STATUS_FIELDS = [
   "spikeArmor", "magicBounce", "reflect", "light", "curse", "curseVulnerability",
   "curseWeakness", "curseTorment", "curseFate", "enraged", "skydiving", "tree"
 ] as const
-// Buff/debuff stats worth diffing (resource stats hp/pp/shield are excluded — covered by damage/heal/cast).
+// Every numeric stat, including the resources hp/pp/shield: they're NOT duplicates of damage/heal — a
+// POKEMON_DAMAGE can come off shield OR hp and doesn't say which, and pp (cast charge) has no other event.
 const STAT_FIELDS = [
   "atk", "def", "speDef", "ap", "speed", "range", "critChance", "critPower",
-  "luck", "maxHP", "maxPP"
+  "luck", "maxHP", "maxPP", "hp", "pp", "shield"
 ] as const
 const STAT_LABEL: Record<string, string> = {
   atk: "ATK", def: "DEF", speDef: "Sp.DEF", ap: "AP", speed: "Speed",
   range: "Range", critChance: "Crit%", critPower: "Crit Pow", luck: "Luck",
-  maxHP: "Max HP", maxPP: "Max PP"
+  maxHP: "Max HP", maxPP: "Max PP", hp: "HP", pp: "PP", shield: "Shield"
 }
 // camelCase status field → readable label ("armorReduction" → "Armor Reduction"; poisonStacks handled inline).
 const statusName = (k: string): string => {
