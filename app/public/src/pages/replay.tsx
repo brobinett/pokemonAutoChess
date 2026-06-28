@@ -88,6 +88,12 @@ export default function Replay() {
   const replayRoom = useRef<ReplayRoom | null>(null)
   const manifestRef = useRef<ReplayManifest | null>(null)
   const indexRef = useRef<ReplayIndex | null>(null) // phase/stage/event index — built once per manifest
+  // The index also lives in state so the async (worker) build re-renders the controls + event log when it
+  // lands; indexRef mirrors it for the imperative reads (keyboard skip handler). Worker ref + request id
+  // let a new load cancel/supersede an in-flight build.
+  const [index, setIndex] = useState<ReplayIndex | null>(null)
+  const indexWorkerRef = useRef<Worker | null>(null)
+  const indexReqRef = useRef(0)
   const bootPausedRef = useRef(false)
   // The spectated board at the moment a seek begins. A re-attach restarts the scene, which builds a
   // brand-new BoardManager; we wait for `board !== prevBoard` so we don't latch onto the outgoing scene.
@@ -157,6 +163,9 @@ export default function Replay() {
         )
       dispatch(leaveGame(undefined)) // arity-0 reducer; RTK types it as needing an (ignored) payload
       rooms.game = undefined
+      // Kill the index-build worker so it can't outlive the page (it holds a copy of the transcript frames).
+      indexWorkerRef.current?.terminate()
+      indexWorkerRef.current = null
       // Drop the dev/test hooks so they can't retain the last ReplayRoom (+ its whole transcript) or the
       // game scene into the next live game.
       delete (window as unknown as { __replayRoom?: ReplayRoom }).__replayRoom
@@ -259,16 +268,65 @@ export default function Replay() {
     setSeekEpoch((n) => n + 1) // (re)run the wait-for-scene effect → startPlayback once the board is ready
   }
 
-  const loadManifest = (manifest: ReplayManifest) => {
-    manifestRef.current = manifest
-    // Index the transcript once (phase/stage boundaries + eliminations) for the skip controls and the
-    // timeline markers. Enhancement-only — a decode hiccup must not block playback, so swallow errors.
+  const setBuiltIndex = (idx: ReplayIndex | null) => {
+    indexRef.current = idx
+    setIndex(idx)
+  }
+  const buildIndexSync = (manifest: ReplayManifest) => {
     try {
-      indexRef.current = buildReplayIndex(manifest.frames, manifest.viewerUid)
+      setBuiltIndex(buildReplayIndex(manifest.frames, manifest.viewerUid))
     } catch (e) {
       console.error("[replay] failed to build index", e)
-      indexRef.current = null
+      setBuiltIndex(null)
     }
+  }
+  // Build the transcript index (phase/stage boundaries + eliminations + per-player event log) off the main
+  // thread — the combat status/stat scan is multi-second on a long capture, and inline it froze the load.
+  // Playback starts immediately (boot below); the controls + timeline + event log fill in when the index
+  // lands. Enhancement-only, so a worker failure falls back to a synchronous build (slower load, same result).
+  const buildIndexAsync = (manifest: ReplayManifest) => {
+    setBuiltIndex(null)
+    indexWorkerRef.current?.terminate() // cancel any in-flight build from a prior load
+    indexWorkerRef.current = null
+    if (typeof Worker === "undefined") {
+      buildIndexSync(manifest)
+      return
+    }
+    const reqId = ++indexReqRef.current
+    let worker: Worker
+    try {
+      worker = new Worker("/replay-index.worker.js")
+    } catch (e) {
+      console.warn("[replay] index worker unavailable; building inline", e)
+      buildIndexSync(manifest)
+      return
+    }
+    indexWorkerRef.current = worker
+    const finish = () => {
+      worker.terminate()
+      if (indexWorkerRef.current === worker) indexWorkerRef.current = null
+    }
+    worker.onmessage = (e: MessageEvent<{ id: number; index?: ReplayIndex; error?: string }>) => {
+      if (e.data.id !== indexReqRef.current) return // a newer load superseded this request
+      finish()
+      if (e.data.index) setBuiltIndex(e.data.index)
+      else {
+        console.warn("[replay] index worker reported an error; building inline:", e.data.error)
+        buildIndexSync(manifest)
+      }
+    }
+    worker.onerror = (e) => {
+      if (reqId !== indexReqRef.current) return
+      console.warn("[replay] index worker crashed; building inline", e.message)
+      finish()
+      buildIndexSync(manifest)
+    }
+    worker.postMessage({ id: reqId, frames: manifest.frames, viewerUid: manifest.viewerUid })
+  }
+
+  const loadManifest = (manifest: ReplayManifest) => {
+    manifestRef.current = manifest
+    buildIndexAsync(manifest)
     boot(startMs, false)
   }
 
@@ -513,7 +571,7 @@ export default function Replay() {
       {replayRoom.current && (
         <ReplayControls
           room={replayRoom.current}
-          index={indexRef.current}
+          index={index}
           navMs={navMs}
           onSeek={seekTo}
           onRestart={restart}
@@ -526,7 +584,7 @@ export default function Replay() {
       {replayRoom.current && (
         <ReplayEventLog
           room={replayRoom.current}
-          index={indexRef.current}
+          index={index}
           onSeek={seekTo}
           open={eventLogOpen}
           onClose={() => setEventLogOpen(false)}
