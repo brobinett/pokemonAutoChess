@@ -206,27 +206,6 @@ export default function Game() {
     useState<FinalRankVisibility>(FinalRankVisibility.HIDDEN)
   const container = useRef<HTMLDivElement>(null)
 
-  // In a replay the placing popup is informational only — its live "stay till the end / leave game"
-  // actions don't apply to a spectator, and leaving it up blocks the rest of the match (most visibly
-  // when the POV player is eliminated mid-game and you keep watching the survivors). Show the placing
-  // briefly, then auto-dismiss so playback keeps going, mirroring the "stay till the end" the viewer
-  // would otherwise have to click. No-op in a live game (isReplay is false).
-  const isReplay = (room as { roomId?: string } | undefined)?.roomId === "replay"
-  useEffect(() => {
-    if (
-      !isReplay ||
-      finalRankVisibility !== FinalRankVisibility.VISIBLE ||
-      finalRank <= 0
-    )
-      return
-    const id = setTimeout(
-      () => setFinalRankVisibility(FinalRankVisibility.CLOSED),
-      5000
-    )
-    return () => clearTimeout(id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isReplay, finalRankVisibility, finalRank])
-
   const currentGameEvent = getCurrentGameEvent()
 
   const MAX_ATTEMPS_RECONNECT = 3
@@ -507,7 +486,11 @@ export default function Game() {
         })
         room.onMessage(Transfer.FINAL_RANK, (finalRank) => {
           setFinalRank(finalRank)
-          setFinalRankVisibility(FinalRankVisibility.VISIBLE)
+          // Suppress the placing popup in a replay: its live "stay till the end / leave game" actions
+          // don't apply to a spectator, and it would otherwise sit over the rest of the match. The
+          // placing still surfaces in the event log's FINAL_RANK row. No-op for a live game.
+          if ((room as { roomId?: string }).roomId !== "replay")
+            setFinalRankVisibility(FinalRankVisibility.VISIBLE)
         })
         room.onMessage(Transfer.PRELOAD_MAPS, async (maps) => {
           logger.info("preloading maps", maps)
