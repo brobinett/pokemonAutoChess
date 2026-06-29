@@ -186,9 +186,17 @@ export function readReplayHeader(bytes: Uint8Array): ReplayHeaderMeta | null {
  *
  * Pure (no package.json import) so it stays usable from the worker bundle and Node harnesses; the caller
  * passes the running build (the client reads it from package.json, exactly as it's stamped at record time).
- * Defensive about missing fields: an absent recorded `version` is treated as unknown (no banner), and the
- * finer `assetsVersion` check only fires when both sides carry it (older files stamped before this field
- * compare on `version` alone). */
+ *
+ * Compares at the SEMVER level so the message is symmetric and friendly regardless of which recorder wrote
+ * the file. The two recorders disagree on what `version` holds: the in-client recorder (recorder.ts) stamps
+ * a clean semver ("6.10.1") plus a separate dated `assetsVersion`; the standalone extension
+ * (replay-recorder/) stamps the dated `assetsVersion` string ("6.10.2.2026-06-23.0") INTO `version` with no
+ * separate field. `semver()` takes the leading `major.minor.patch` from either, so both sides display the
+ * same precision ("6.10.2" vs "6.10.1", not "6.10.2.2026-06-23.0" vs "6.10.1") and a same-patch capture from
+ * either recorder is treated as the same version. The finer `assetsVersion` (build-date) check only fires
+ * when BOTH sides carry a real `assetsVersion` — so a pre-`assetsVersion` capture (old in-client `commit`
+ * field, or an extension capture with no separate field) doesn't false-alarm on the same patch; it just
+ * can't distinguish builds within a patch, which is an under-warn, not a wrong-warn. */
 export function buildSkewMessage(
   recorded:
     | { version?: string; assetsVersion?: string; serializerId?: string }
@@ -197,8 +205,10 @@ export function buildSkewMessage(
   running: { version: string; assetsVersion: string; serializerId?: string }
 ): string | null {
   if (!recorded?.version) return null // unknown / foreign header — nothing to compare against
-  if (recorded.version !== running.version)
-    return `This replay was recorded on game version ${recorded.version}; you're running ${running.version}. Some of it may not play back correctly.`
+  const recV = semver(recorded.version)
+  const runV = semver(running.version)
+  if (recV !== runV)
+    return `This replay was recorded on game version ${recV}; you're running ${runV}. Some of it may not play back correctly.`
   if (
     recorded.serializerId &&
     running.serializerId &&
@@ -210,8 +220,15 @@ export function buildSkewMessage(
     running.assetsVersion &&
     recorded.assetsVersion !== running.assetsVersion
   )
-    return `This replay was recorded on a different build of ${running.version} (${recorded.assetsVersion} vs ${running.assetsVersion}). Most of it should play back, but some details may differ.`
+    return `This replay was recorded on a different build of ${runV} (${recorded.assetsVersion} vs ${running.assetsVersion}). Most of it should play back, but some details may differ.`
   return null
+}
+
+/** The leading `major.minor.patch` of a version/build string — "6.10.1" from "6.10.1", and "6.10.2" from a
+ * dated `assetsVersion` like "6.10.2.2026-06-23.0". Returns the input unchanged when it isn't semver-shaped
+ * (e.g. the extension's "live-unknown" fallback). */
+function semver(v: string): string {
+  return (typeof v === "string" && v.match(/^\d+\.\d+\.\d+/)?.[0]) || v
 }
 
 /** Encode ONE frame record for streaming append. `prevT` = the previous frame's t; pass null for the
