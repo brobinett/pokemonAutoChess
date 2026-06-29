@@ -319,6 +319,18 @@
 .replay-limitations p {
   margin: 0 0 0.5em;
 }
+.replay-limitations-sub {
+  font-weight: 600;
+  color: var(--color-fg-primary);
+  margin: 0.6em 0 0.2em;
+}
+.replay-limitations ul {
+  margin: 0 0 0.5em;
+  padding-left: 1.2em;
+}
+.replay-limitations li {
+  margin: 0.15em 0;
+}
 .replay-limitations strong {
   color: var(--color-fg-primary);
   font-weight: 600;

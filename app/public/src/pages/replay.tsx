@@ -777,16 +777,43 @@ function ReplayLibrary({
             Download the ones you want to keep.
           </p>
           <p>
-            A replay is recorded from one player's client. Every player's board, economy, synergies, items,
-            round results, eliminations, and in-combat buffs / statuses are reconstructed from shared game
-            state — so the event log's per-player chips let you follow anyone. Two things are limited by the
-            single client: <strong>shop rolls</strong> are only known for the recording player (everyone
-            else's shop is hidden), and <strong>ability casts &amp; damage numbers</strong> follow the
-            recorder's <strong>camera</strong> — they're captured only for the board being watched at that
-            moment. So if you scout another board mid-fight you get that board's casts and miss your own;
-            those rows appear under whichever board was being watched, not always the recording player. A
-            disconnect during recording leaves a short gap.
+            A replay is recorded from one player's client, so the event log rebuilds most of the match for{" "}
+            <em>every</em> player from shared game state — use the per-player chips to follow anyone. A few
+            things are only knowable for the recording player.
           </p>
+          <div className="replay-limitations-sub">Reconstructed for all players</div>
+          <ul>
+            <li>
+              boards, unit moves, evolutions, items, synergies, levels, gold &amp; life, round results,
+              and eliminations
+            </li>
+            <li>
+              in-combat <strong>status effects</strong>, <strong>stat changes</strong>, and{" "}
+              <strong>board effects</strong> — for every board
+            </li>
+            <li>
+              <strong>digs</strong>, <strong>cooks</strong>, and <strong>emotes</strong> — shown under the
+              player who did them
+            </li>
+          </ul>
+          <div className="replay-limitations-sub">Only the recording player</div>
+          <ul>
+            <li>
+              <strong>Shop</strong> — rerolls, buys, and shop removals. Everyone else's shop is hidden, so an
+              opponent buying a unit just reads as "gained."
+            </li>
+            <li>
+              <strong>Combat casts &amp; damage</strong> — ability casts and damage / heal numbers follow the
+              recorder's camera (captured only for the board being watched), so scouting another board
+              mid-fight gets you its casts but misses your own; the fight's <strong>weather</strong> is
+              recorded only for the recording player's own fight.
+            </li>
+            <li>
+              <strong>Income breakdown</strong> — the per-round income split (base / interest / streak) is
+              sent only to the recording player.
+            </li>
+          </ul>
+          <p>A disconnect during recording leaves a short gap.</p>
         </div>
       </div>
     </div>

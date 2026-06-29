@@ -120,12 +120,13 @@ const COMBAT_SUBLABEL: Record<string, string> = {
   POKEMON_DAMAGE: "Damage",
   POKEMON_HEAL: "Heals",
   DISPLAY_TEXT: "Text",
-  BOARD_EVENT: "Board effects"
+  BOARD_EVENT: "Board effects",
+  WEATHER: "Weather"
 }
 // Drill-down sections for the merged Combat chip. The source note honors the real distinction: casts/damage
 // only exist for the board the recorder was watching, while status/stats are recovered for every board.
 const COMBAT_SECTIONS: { cat: Category; label: string }[] = [
-  { cat: "combat", label: "Casts / damage · recorder's PoV" },
+  { cat: "combat", label: "Casts / damage / weather · recorder's PoV" },
   { cat: "status", label: "Status · all boards" },
   { cat: "stats", label: "Stats · all boards" }
 ]
@@ -152,7 +153,7 @@ const ACTION_CAT: Record<string, Category> = {
   region: "flow",
   rule: "flow",
   artifact: "items",
-  weather: "synergy",
+  weather: "combat", // a fight property (the recorder's-fight weather) → grouped under Combat, not Synergy
   berries: "synergy",
   status: "status",
   stat: "stats",
