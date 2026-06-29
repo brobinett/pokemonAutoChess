@@ -93,7 +93,7 @@ export default function Replay() {
   const [playing, setPlaying] = useState(false)
   const [seeking, setSeeking] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [buildSkew, setBuildSkew] = useState<string | null>(null) // set at load when the recording's build != the running build; a dismissible banner
+  const [buildSkew, setBuildSkew] = useState<string | null>(null) // set at load when the recording's build != the running build; shown in the loading overlay
   const [gen, setGen] = useState(0) // keys the mounted <Game/>; bumps only on the initial mount (seeks re-attach in place)
   const [showGame, setShowGame] = useState(false) // <Game/> mounts once and stays mounted; seeks re-attach the scene
   const [seekEpoch, setSeekEpoch] = useState(0) // bumps per (re)boot to (re)run the wait-for-scene → startPlayback effect
@@ -275,10 +275,10 @@ export default function Replay() {
 
   const loadManifest = (manifest: ReplayManifest) => {
     manifestRef.current = manifest
-    // Warn (non-blocking) when the recording's stamped build differs from this client's: a structural
-    // schema change makes per-frame patches throw and silently skip, degrading to a frozen/partial scene.
-    // We still attempt playback — same-shape patch releases usually decode fine — but the banner explains
-    // the degradation instead of leaving it mysterious. (Banner rendered below; dismissible.)
+    // Warn when the recording's stamped build differs from this client's: a structural schema change makes
+    // per-frame patches throw and silently skip, degrading to a frozen/partial scene. We still attempt
+    // playback — same-shape patch releases usually decode fine — but the loading overlay shows this so the
+    // degradation is explained up front rather than leaving it mysterious. (Rendered in the load overlays.)
     setBuildSkew(buildSkewMessage(manifest.game, RUNNING_BUILD))
     // Build the index (phase/stage boundaries + eliminations + per-player event log) for the skip controls,
     // timeline markers, and event log. Synchronous on purpose: it runs while the CSS-animated "Loading
@@ -508,27 +508,14 @@ export default function Replay() {
           <div className="replay-spinner" />
           <div className="replay-overlay-title">Loading replay…</div>
           <div className="replay-overlay-sub">preparing the match</div>
+          {buildSkew && (
+            <div className="replay-overlay-skew">⚠ {buildSkew}</div>
+          )}
         </div>
       </div>
     )
   return (
     <>
-      {/* Non-blocking build-skew banner: the recording was made on a different game build, so playback may
-          be incomplete. Sits above the scene (doesn't cover it) and is dismissible — playback continues. */}
-      {buildSkew && (
-        <div className="replay-build-banner" role="status">
-          <span className="replay-build-banner-icon">⚠</span>
-          <span className="replay-build-banner-text">{buildSkew}</span>
-          <button
-            type="button"
-            className="replay-build-banner-dismiss"
-            aria-label="Dismiss"
-            onClick={() => setBuildSkew(null)}
-          >
-            ✕
-          </button>
-        </div>
-      )}
       {/* <Game/> mounts once and stays mounted for the whole session — seeks re-attach the scene in
           place (reattachReplayRoom) rather than remount, so the Phaser game and its loaded assets
           persist. `gen` keys a clean boundary per mount (only the initial load bumps it).
@@ -551,6 +538,12 @@ export default function Replay() {
             <div className="replay-overlay-sub">
               {seeking ? "rebuilding the scene" : "preparing the match"}
             </div>
+            {/* On the initial load only (not seeks — it'd nag on every scrub): warn when the recording's
+                build differs from this client's. Shown here, during the multi-second load the user is
+                already reading, rather than as a banner over playback. */}
+            {buildSkew && !seeking && (
+              <div className="replay-overlay-skew">⚠ {buildSkew}</div>
+            )}
           </div>
         </div>
       )}
