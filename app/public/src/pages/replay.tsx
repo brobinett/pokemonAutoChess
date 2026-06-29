@@ -2,6 +2,7 @@ import type { Room } from "@colyseus/sdk"
 import type { User } from "@firebase/auth-types"
 import firebase from "firebase/compat/app"
 import { useEffect, useRef, useState } from "react"
+import { flushSync } from "react-dom"
 import pkg from "../../../../package.json"
 import type GameState from "../../../rooms/states/game-state"
 import { GamePhaseState } from "../../../types/enum/Game"
@@ -281,18 +282,25 @@ export default function Replay() {
     // per-frame patches throw and silently skip, degrading to a frozen/partial scene. We still attempt
     // playback — same-shape patch releases usually decode fine — but the loading overlay shows this so the
     // degradation is explained up front rather than leaving it mysterious. (Rendered in the load overlays.)
-    setBuildSkew(buildSkewMessage(manifest.game, RUNNING_BUILD))
+    // Commit the skew notice to the DOM synchronously, THEN run the heavy build only after the browser has
+    // painted that frame. The build below is a synchronous pass (the combat status/stat scan dominates; ~5s
+    // on a long capture) that blocks the main thread, so if it runs in the same task as setBuildSkew the
+    // notice never paints until after it — the loading card stays on its pre-notice layout through the build
+    // and the notice pops in (resizing the card) only when boot() swaps in the post-build overlay. flushSync
+    // commits the notice now; requestAnimationFrame→setTimeout runs the build strictly AFTER the painted
+    // frame (the rAF callback is pre-paint, the setTimeout it schedules is post-paint — a plain double-rAF
+    // does NOT work, both rAF callbacks run before paint). So the card carries the notice from the first
+    // frame of the load and keeps one shape throughout.
+    flushSync(() =>
+      setBuildSkew(buildSkewMessage(manifest.game, RUNNING_BUILD))
+    )
     // Build the index (phase/stage boundaries + eliminations + per-player event log) for the skip controls,
-    // timeline markers, and event log, then boot. boot() reveals the controls + log together once the index
-    // is ready — no progressive pop-in. The build is a synchronous pass (the combat status/stat scan
-    // dominates; ~5s on a long capture), so DEFER it past a paint (double rAF): otherwise it blocks the main
-    // thread with the loading card frozen on its pre-notice layout, and the skew notice only appears when
-    // boot() swaps in the post-build overlay — resizing the card mid-load. Yielding a frame first lets the
-    // overlay paint WITH the notice, so the card keeps one shape through the whole load. aliveRef guards the
-    // one-frame window: a route-exit before the build must not boot into a torn-down page (it would re-pollute
-    // the just-restored session — see the teardown effect). Enhancement-only, so a decode hiccup must not
-    // block playback: swallow errors. (If the scan ever needs to leave the critical path, derive it lazily
-    // when Status/Stats is enabled rather than eagerly — keeps the common build fast without a worker. See BACKLOG.)
+    // timeline markers, and event log, then boot — which reveals the controls + log together once the index
+    // is ready (no progressive pop-in). aliveRef guards the post-paint window: a route-exit before the build
+    // must not boot into a torn-down page (it would re-pollute the just-restored session — see the teardown
+    // effect). Enhancement-only, so a decode hiccup must not block playback: swallow errors. (If the scan
+    // ever needs to leave the critical path, derive it lazily when Status/Stats is enabled rather than
+    // eagerly — keeps the common build fast without a worker. See BACKLOG.)
     const buildAndBoot = () => {
       if (!aliveRef.current) return
       try {
@@ -302,15 +310,15 @@ export default function Replay() {
         indexRef.current = null
       }
       // boot() ran synchronously inside loadManifest before, so a throw (e.g. a corrupt handshake) reached
-      // the load path's .catch → the error screen. Now it's in a rAF, off the promise chain, so surface it
-      // here to preserve that — otherwise a fatal boot would hang on the loading overlay forever.
+      // the load path's .catch → the error screen. Now it's off the promise chain, so surface it here to
+      // preserve that — otherwise a fatal boot would hang on the loading overlay forever.
       try {
         boot(startMs, false)
       } catch (e) {
         setError(String((e as Error)?.message ?? e))
       }
     }
-    requestAnimationFrame(() => requestAnimationFrame(buildAndBoot))
+    requestAnimationFrame(() => setTimeout(buildAndBoot, 0))
   }
 
   // Controls callbacks: every seek (either direction) and restart reboots at the target — see boot().
