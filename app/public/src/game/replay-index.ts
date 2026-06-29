@@ -12,6 +12,11 @@ import { ItemRecipe } from "../../../types/enum/Item"
 import { Pkm, PkmDuos } from "../../../types/enum/Pokemon"
 import type { Synergy } from "../../../types/enum/Synergy"
 import type { ReplayFrame } from "./replay-room"
+import { type EntitySnap, prettyName, scanFrameCombat } from "./replay-combat-scan"
+
+// prettyName lives in replay-combat-scan (so the lean foreign-combat worker can reuse it); re-export it
+// here for the existing callers (the event-log component imports it from this module).
+export { prettyName }
 
 // A compact index of where the interesting moments are in a recording: every phase-within-stage
 // boundary (PICK/FIGHT/TOWN) and significant events (eliminations). It powers the viewer's
@@ -72,8 +77,8 @@ export type ReplayEventType =
   | "weather" // the POV's fight started with weather (its simulation's weather, ≠ NEUTRAL)
   | "berries" // the POV's berry-tree species repopulated (berryTreesType — changes on each region)
   | "rule" // a special game rule is in effect (state.specialGameRule — scribble modes; once, at start)
-  | "status" // a combat status flipped on for a unit in the POV's fight (burn/poison/freeze/… — entity.status)
-  | "stat" // a combat stat changed for a unit in the POV's fight (atk/speed/ap/hp/… — entity stat field)
+  | "status" // a combat status flipped on for a unit on any board, owner-tagged (burn/poison/freeze/… — entity.status)
+  | "stat" // a combat stat changed for a unit on any board, owner-tagged (atk/speed/ap/hp/… — entity stat field)
   | "item" // an item entered player.items with no unit losing it (pve reward, town, synergy, dig…)
   | "craft" // components combined into a completed item (player.items bench-combine OR onto a unit)
   | "equip" // an item left player.items and landed on a board unit
@@ -173,17 +178,6 @@ export interface ReplayIndex {
   foreignFrames: number[]
 }
 
-// PAC enum values are SCREAMING_SNAKE (Pkm.SWINUB = "SWINUB", Ability.ICE_SPINNER); render them as
-// "Swinub" / "Ice Spinner". Derived from the value, so it survives a submodule bump (no i18n dep).
-export function prettyName(v: string | undefined | null): string {
-  if (!v) return ""
-  return v
-    .toLowerCase()
-    .split("_")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ")
-}
-
 // DungeonPMDO values (player.map) are PascalCase with trailing digits ("AmpPlains", "BuriedRelic1",
 // "DarkIceMountainPeak"); render them as the game's region label by splitting on case/letter-digit
 // boundaries — exactly what the `t("map.<value>")` English strings are ("Amp Plains", "Buried Relic 1").
@@ -208,34 +202,8 @@ const regionName = (map: string): string =>
 const weatherName = (w: string): string =>
   w === "BLOODMOON" ? "Blood Moon" : prettyName(w)
 
-// Combat-entity diff (status + stats). These are synced @type fields on each PokemonEntity (Status schema
-// + stat fields), not messages — so they're surfaced by diffing the POV simulation's units frame-to-frame.
-// All 37 status fields (the game's names look odd but each IS a status); poisonStacks is a counter, the
-// rest booleans (false→true = applied).
-const STATUS_FIELDS = [
-  "burn", "silence", "fatigue", "poisonStacks", "freeze", "protect", "sleep",
-  "confusion", "wound", "resurrection", "resurrecting", "paralysis", "pokerus",
-  "possessed", "locked", "blinded", "armorReduction", "runeProtect", "charm",
-  "flinch", "electricField", "psychicField", "grassField", "fairyField",
-  "spikeArmor", "magicBounce", "reflect", "light", "curse", "curseVulnerability",
-  "curseWeakness", "curseTorment", "curseFate", "enraged", "skydiving", "tree"
-] as const
-// Every numeric stat, including the resources hp/pp/shield: they're NOT duplicates of damage/heal — a
-// POKEMON_DAMAGE can come off shield OR hp and doesn't say which, and pp (cast charge) has no other event.
-const STAT_FIELDS = [
-  "atk", "def", "speDef", "ap", "speed", "range", "critChance", "critPower",
-  "luck", "maxHP", "maxPP", "hp", "pp", "shield"
-] as const
-const STAT_LABEL: Record<string, string> = {
-  atk: "ATK", def: "DEF", speDef: "Sp.DEF", ap: "AP", speed: "Speed",
-  range: "Range", critChance: "Crit%", critPower: "Crit Pow", luck: "Luck",
-  maxHP: "Max HP", maxPP: "Max PP", hp: "HP", pp: "PP", shield: "Shield"
-}
-// camelCase status field → readable label ("armorReduction" → "Armor Reduction"; poisonStacks handled inline).
-const statusName = (k: string): string => {
-  const s = k.replace(/([a-z])([A-Z])/g, "$1 $2")
-  return s.charAt(0).toUpperCase() + s.slice(1)
-}
+// All-boards combat status/stat diff lives in scanFrameCombat (replay-combat-scan.ts); the build loop
+// below calls it once per state frame to emit owner-tagged status/stat events for every simulation.
 
 const b64ToBytes = (b64: string): Uint8Array =>
   Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
@@ -695,13 +663,10 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   let prevStage: number | undefined
   let prevTownEncounter: string | null | undefined // state.townEncounter (shared town NPC)
   let prevRule: string | null | undefined // state.specialGameRule (scribble mode; set once at start)
-  // Per-fight combat-entity tracking (status + stats). Reset when the POV's simulation changes (new round
-  // → new entities). entityPrev: entity id → its last status/stat snapshot.
-  let combatSimId: string | undefined
-  const entityPrev = new Map<
-    string,
-    { status: Record<string, unknown>; stats: Record<string, number> }
-  >()
+  // Combat-entity tracking (status + stats) for EVERY board, owner-tagged (scanFrameCombat). prevBySim:
+  // simId → (entity id → last snapshot); persists across frames (a new round's sim has a new id → fresh
+  // baseline). Status/stats sync for all sims (no @view), so this covers all 8 players, not just the POV.
+  const prevBySim = new Map<string, Map<string, EntitySnap>>()
   const lifePrev = new Map<string, number>()
   const eliminated = new Set<string>()
 
@@ -817,11 +782,9 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       lifePrev.set(uid, life)
     })
 
-    // --- Single-POV combat overlay (the recorder's own camera) ---
-    // The income breakdown (POV-only PLAYER_INCOME message), the POV fight's weather, and per-entity
-    // status/stat diffs are captured ONLY for the recorder's spectated fight (broadcastToSpectators /
-    // a POV client.send), so they stay single-POV and are tagged with the viewer uid. Generalising
-    // status/stats to every board is a later increment.
+    // --- POV-only overlays (income breakdown + the POV fight's weather) ---
+    // These are captured ONLY for the recorder's spectated fight (a POV client.send / its own
+    // simulation), so they stay single-POV and are tagged with the viewer uid.
     const pov = viewerUid ? state.players?.get(viewerUid) : undefined
     if (pov) {
       // Resolve a deferred round-income breakdown now that this PICK frame's interest/streak have landed.
@@ -839,61 +802,24 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         pendingIncome = null
       }
       // Weather — the POV's own fight starts with a weather (its simulation's weather); NEUTRAL = none.
-      type TeamSchema = {
-        forEach?: (cb: (e: Record<string, unknown>, id: string) => void) => void
-      }
-      const povSim = state.simulations?.get(pov.simulationId) as
-        | { weather?: string; blueTeam?: TeamSchema; redTeam?: TeamSchema }
-        | undefined
+      const povSim = state.simulations?.get(pov.simulationId) as { weather?: string } | undefined
       const weather = povSim?.weather
       if (weather && weather !== "NEUTRAL" && weather !== povWeather) {
         actions.push({ t: f.t, type: "weather", label: `Weather: ${weatherName(weather)}`, uid: viewerUid })
       }
       povWeather = weather
-      // Combat-entity status + stat changes in the POV's fight (both teams). Diff each unit vs its last
-      // snapshot; reset on a new simulation (new round). A status flips false→true (poisonStacks ↑); a
-      // buff stat changes value. Combat-volume → routed to the default-off Status/Stats categories.
-      if (combatSimId !== pov.simulationId) {
-        combatSimId = pov.simulationId
-        entityPrev.clear()
-      }
-      const scanEntity = (e: Record<string, unknown>, id: string) => {
-        const prev = entityPrev.get(id)
-        const nm = prettyName((e.name as string) ?? "")
-        const st = e.status as Record<string, unknown> | undefined
-        const statusSnap: Record<string, unknown> = {}
-        for (const k of STATUS_FIELDS) {
-          const cur = st?.[k]
-          statusSnap[k] = cur
-          const was = prev?.status?.[k]
-          if (k === "poisonStacks") {
-            if (typeof cur === "number" && cur > 0 && cur !== was)
-              actions.push({ t: f.t, type: "status", label: `${nm} · Poisoned (${cur})`, uid: viewerUid, key: "Poison" })
-          } else if (cur === true && was !== true) {
-            actions.push({ t: f.t, type: "status", label: `${nm} · ${statusName(k)}`, uid: viewerUid, key: statusName(k) })
-          }
-        }
-        const statsSnap: Record<string, number> = {}
-        for (const k of STAT_FIELDS) {
-          const cur = e[k]
-          if (typeof cur !== "number") continue
-          statsSnap[k] = cur
-          const was = prev?.stats?.[k]
-          if (was != null && cur !== was) {
-            const d = cur - was
-            actions.push({ t: f.t, type: "stat", label: `${nm} ${STAT_LABEL[k]} ${d > 0 ? "+" : ""}${d}`, uid: viewerUid, key: STAT_LABEL[k] })
-          }
-        }
-        entityPrev.set(id, { status: statusSnap, stats: statsSnap })
-      }
-      povSim?.blueTeam?.forEach?.(scanEntity)
-      povSim?.redTeam?.forEach?.(scanEntity)
     }
 
-    // --- Per-player state-diff events (Tab 2 = everyone) ---
-    // The same board / economy / items / synergy / round / region / berry / flower / wanderer derivation,
-    // run for EVERY player and tagged with its uid. The shop-only signals (reroll / "remove" / buy-vs-
-    // gained) only fire for the POV, whose snapshot carries a populated shop. Combat (above) stays POV-only.
+    // --- All-boards combat (status + stats) ---
+    // Diff every simulation's units, owner-tagged (scanFrameCombat handles the ghost/PvE exclusion). A
+    // status flips false→true (poisonStacks ↑); a buff stat changes value. Combat-volume → the default-off
+    // Status/Stats categories. Owner-tagged so each player's combat shows under their name in the log.
+    scanFrameCombat(state, prevBySim, f.t, actions)
+
+    // --- Per-player state-diff events ---
+    // Board / economy / items / synergy / round / region / berry / flower / wanderer derivation, run for
+    // EVERY player and tagged with its uid (the log's per-player filter slices on it). The shop-only
+    // signals (reroll / "remove" / buy-vs-gained) only fire for the POV, whose snapshot carries a shop.
     const deriveCtx: DeriveCtx = {
       t: f.t,
       specialGameRule: state.specialGameRule,

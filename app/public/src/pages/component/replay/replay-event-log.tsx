@@ -138,10 +138,10 @@ type LogEvent = {
   summary: string
   cat: Category
   kind: "msg" | "phase" | "elim" | "action" | "pick"
-  // The player this event was derived for. Drives the two tabs: the "recorded POV" tab shows the
-  // recording player's own events (uid === viewer) plus uid-less game-level milestones (phase / elim /
-  // town / rule); the "everyone" tab shows all players, labelled by name. Combat messages are the POV's
-  // own fight (broadcastToSpectators), so they carry the viewer uid.
+  // The player this event belongs to — the per-player filter slices on it. Owner-tagged: a player's
+  // board/economy/combat-status/stats all carry their uid; uid-less rows are game-level milestones (phase
+  // / elim / town / rule) and always show. Combat MESSAGES (cast/damage/heal) are the recorder's own fight
+  // (broadcastToSpectators), so they carry the viewer uid — the single-POV gap (only the POV has them).
   uid?: string
   // Optional sub-type for the fine-grained filter (the stat field / status name); absent → the `type`
   // column IS the filterable granularity. `subKey()` below resolves the effective key either way.
@@ -153,8 +153,8 @@ type LogEvent = {
 const subKey = (e: { key?: string; type: string }) => e.key ?? e.type
 const subId = (cat: Category, sub: string) => `${cat}:${sub}`
 
-const TAB_KEY = "replay.eventlog.tab"
 const SUBOFF_KEY = "replay.eventlog.suboff" // sub-types explicitly turned off (within an enabled category)
+const PLAYERON_KEY = "replay.eventlog.playeron" // players shown in the per-player filter (default: the POV only)
 
 const fmt = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000))
@@ -272,17 +272,8 @@ export default function ReplayEventLog({
   open: boolean
   onClose: () => void
 }) {
+  const viewerUid = room.manifest.viewerUid
   const [enabled, setEnabled] = useState<Record<Category, boolean>>(loadFilters)
-  // Which tab is active: "pov" = the recording player only (perfect info); "all" = everyone (best
-  // effort — opponents' boards/economy are derived from synced state, but their shop rolls and combat
-  // cast/damage aren't captured). Persisted; defaults to the focused POV view.
-  const [tab, setTab] = useState<"pov" | "all">(() => {
-    try {
-      return localStorage.getItem(TAB_KEY) === "all" ? "all" : "pov"
-    } catch {
-      return "pov"
-    }
-  })
   // Fine-grained filter: sub-types explicitly turned off within their (still-enabled) category. Default
   // empty → an enabled category shows all its sub-types. `expanded` is which category's drill-down is open.
   const [subOff, setSubOff] = useState<Set<string>>(() => {
@@ -295,6 +286,18 @@ export default function ReplayEventLog({
     return new Set<string>()
   })
   const [expanded, setExpanded] = useState<Category | null>(null)
+  // Per-player filter: which players' events are shown. Defaults to the recording player only (the common
+  // "review my own game" view); add opponents' chips to scout / compare. Stored as the ON set (the default
+  // is small) so it survives a reload; applies to ALL categories — it focuses the whole timeline.
+  const [playerOn, setPlayerOn] = useState<Set<string>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(PLAYERON_KEY) || "null")
+      if (Array.isArray(saved)) return new Set<string>(saved)
+    } catch {
+      /* ignore */
+    }
+    return new Set<string>([viewerUid])
+  })
   // Auto-follow the playhead (scroll the active row into view each tick). Off → the user can scroll the
   // log freely while playback continues in the background without being yanked back to the current event.
   // Re-enabling jumps back to the playhead. A manual wheel-scroll auto-unlocks (feels natural).
@@ -377,15 +380,6 @@ export default function ReplayEventLog({
     }
   }, [enabled])
 
-  // persist the active tab
-  useEffect(() => {
-    try {
-      localStorage.setItem(TAB_KEY, tab)
-    } catch {
-      /* ignore */
-    }
-  }, [tab])
-
   // persist the per-sub-type off-set
   useEffect(() => {
     try {
@@ -394,6 +388,15 @@ export default function ReplayEventLog({
       /* ignore */
     }
   }, [subOff])
+
+  // persist the per-player on-set
+  useEffect(() => {
+    try {
+      localStorage.setItem(PLAYERON_KEY, JSON.stringify([...playerOn]))
+    } catch {
+      /* ignore */
+    }
+  }, [playerOn])
 
   // restore the saved size + persist on resize. The CSS resize handle mutates the element directly;
   // a ResizeObserver writes the new size back so it survives a reload.
@@ -415,7 +418,6 @@ export default function ReplayEventLog({
     return () => ro.disconnect()
   }, [open, saved])
 
-  const viewerUid = room.manifest.viewerUid
   const playerNames = index?.playerNames ?? {}
 
   // Build the full event list once per recording: every message frame + phase/stage + elimination +
@@ -434,12 +436,12 @@ export default function ReplayEventLog({
         out.push({ t: f.t, frame: i, type, summary: summarize(type, f.payload, info), cat: CATEGORY_OF[type] ?? "engine", kind: "msg", uid: viewerUid })
       }
     })
-    // Game-level milestones (phase / elimination) carry no uid → they show in BOTH tabs.
+    // Game-level milestones (phase / elimination) carry no uid → they always show.
     index?.segments.forEach((s) => out.push({ t: s.t, frame: -1, type: "PHASE", summary: `Stage ${s.stage} · ${s.phaseLabel}`, cat: "flow", kind: "phase" }))
     index?.events.filter((e) => e.type === "elimination").forEach((e) => out.push({ t: e.t, frame: -1, type: "ELIMINATION", summary: e.label, cat: "flow", kind: "elim" }))
     // Per-player actions → categories: shop/board management to Economy, synergy-driven gains to Synergy,
-    // proposition picks to Match flow. The action's own uid carries the owning player (uid-less = the
-    // game-level town/rule rows).
+    // proposition picks to Match flow, combat status/stat to Status/Stats. The action's own uid carries the
+    // owning player (uid-less = the game-level town/rule rows); the per-player filter slices on it.
     index?.actions.forEach((a) => out.push({ t: a.t, frame: -1, type: a.type.toUpperCase(), summary: a.label, cat: ACTION_CAT[a.type] ?? "economy", kind: a.type === "pick" ? "pick" : "action", uid: a.uid, key: a.key }))
     return out.sort((a, b) => a.t - b.t || a.frame - b.frame)
   }, [room, index, viewerUid])
@@ -454,18 +456,32 @@ export default function ReplayEventLog({
     return m
   }, [events])
 
+  // Player chip order for the per-player filter: the recording player first, then the rest alphabetically
+  // by name. Built from the index's roster (every player that appeared, incl. eliminated).
+  const playerOrder = useMemo(() => {
+    const names = index?.playerNames ?? {}
+    return Object.keys(names).sort((a, b) =>
+      a === viewerUid ? -1 : b === viewerUid ? 1 : (names[a] || "").localeCompare(names[b] || "")
+    )
+  }, [index, viewerUid])
+  // Show the player-name column only when more than one player is selected (the single-player default
+  // doesn't need it). Drives the row layout + the panel's wide-column class.
+  const multiPlayer = playerOn.size > 1
+
   const base = index?.gameStartMs ?? 0
-  // Tab + category filter. "pov" keeps only the recording player's events (uid === viewer) plus uid-less
-  // game-level rows; "all" keeps everyone. Category chips apply within the active tab.
+  // Category + sub-type + per-player filter. A row shows when its category (and sub-type) is enabled and
+  // either it's a uid-less game-level row (phase/elim/town/rule, always shown) or its owning player is
+  // selected. Combat is owner-tagged in the index, so selecting a player shows that player's whole
+  // timeline incl. their board's status/stats (cast/damage stay POV-only — the single-POV gap).
   const visible = useMemo(
     () =>
       events.filter(
         (e) =>
           enabled[e.cat] &&
           !subOff.has(subId(e.cat, subKey(e))) &&
-          (tab === "all" || e.uid == null || e.uid === viewerUid)
+          (e.uid == null || playerOn.has(e.uid))
       ),
-    [events, enabled, subOff, tab, viewerUid]
+    [events, enabled, subOff, playerOn]
   )
 
   // The visible row at the playhead: the last one with t <= currentMs.
@@ -485,7 +501,8 @@ export default function ReplayEventLog({
   const windowRows = open ? visible.slice(startIdx, endIdx) : []
 
   // Measure the real row height + viewport once rows are on screen (and when the row shape changes — the
-  // player column in the "all" tab is wider but still one line). Keeps the spacers/scrollbar accurate.
+  // player-name column appears when >1 player is selected, but rows stay one line). Keeps the spacers
+  // and scrollbar accurate.
   useEffect(() => {
     if (!open) return
     const list = listRef.current
@@ -493,7 +510,7 @@ export default function ReplayEventLog({
     if (list.clientHeight) setViewportH(list.clientHeight)
     const firstRow = list.querySelector<HTMLElement>(".rel-row")
     if (firstRow && firstRow.offsetHeight > 0) setRowH(firstRow.offsetHeight)
-  }, [open, tab, total])
+  }, [open, multiPlayer, total])
 
   // Debug hook for the headless harnesses: the list is virtualized, so the DOM holds only a window of rows.
   // Expose the full filtered set (for counts / per-type samples) under ?debug; cleared on unmount.
@@ -525,10 +542,8 @@ export default function ReplayEventLog({
   const posStyle: React.CSSProperties = pos
     ? { left: pos.x, top: pos.y }
     : { right: DEFAULT_RIGHT, top: DEFAULT_TOP }
-  // Tab 1 label = the recording player's in-game name (most informative); fall back to a generic label.
-  const povLabel = playerNames[viewerUid] || "Recorded POV"
   return (
-    <div ref={panelRef} className={`replay-eventlog my-container${tab === "all" ? " tab-all" : ""}`} style={posStyle}>
+    <div ref={panelRef} className={`replay-eventlog my-container${multiPlayer ? " multi-player" : ""}`} style={posStyle}>
       <header className="rel-head" onMouseDown={onHeadDown}>
         <span className="rel-title">Event log</span>
         <span className="rel-count" title={`${visible.length} shown of ${events.length} total events`}>
@@ -543,22 +558,6 @@ export default function ReplayEventLog({
         </button>
         <button className="rel-close" title="Close" onClick={onClose}>×</button>
       </header>
-      <div className="rel-tabs">
-        <button
-          className={`rel-tab${tab === "pov" ? " on" : ""}`}
-          title="The recording player's own timeline — perfect information"
-          onClick={() => setTab("pov")}
-        >
-          {povLabel}
-        </button>
-        <button
-          className={`rel-tab${tab === "all" ? " on" : ""}`}
-          title="Everyone — opponents' boards, economy, and synergies derived from synced state (best effort: their shop rolls and combat cast/damage aren't captured client-side)"
-          onClick={() => setTab("all")}
-        >
-          Everyone
-        </button>
-      </div>
       <div className="rel-filters">
         {CATEGORIES.map((c) => {
           const drillable = (subtypesByCat.get(c.key)?.size ?? 0) > 1
@@ -612,6 +611,33 @@ export default function ReplayEventLog({
           })}
         </div>
       )}
+      {playerOrder.length > 0 && (
+        // Per-player filter: focus the whole timeline on one or more players. Defaults to the recording
+        // player; add opponents to scout/compare. Combat status/stats are owner-tagged, so a player's chip
+        // surfaces their board's fight too (cast/damage stay POV-only — the single-POV capture gap).
+        <div className="rel-players">
+          {playerOrder.map((uid) => {
+            const on = playerOn.has(uid)
+            return (
+              <button
+                key={uid}
+                className={`rel-pchip${on ? " on" : ""}${uid === viewerUid ? " pov" : ""}`}
+                title={`Toggle ${playerNames[uid] || uid}'s events`}
+                onClick={() =>
+                  setPlayerOn((s) => {
+                    const n = new Set(s)
+                    if (on) n.delete(uid)
+                    else n.add(uid)
+                    return n
+                  })
+                }
+              >
+                {playerNames[uid] || uid}
+              </button>
+            )
+          })}
+        </div>
+      )}
       <div
         className="rel-list"
         ref={listRef}
@@ -633,7 +659,7 @@ export default function ReplayEventLog({
                 onClick={() => onSeekRef.current(e.t)}
               >
                 <span className="rel-t">{fmt(e.t - base)}</span>
-                {tab === "all" ? (
+                {multiPlayer ? (
                   // the player this event belongs to (uid-less game-level rows show blank)
                   <span className="rel-player" title={e.uid ? playerNames[e.uid] : ""}>{e.uid ? playerNames[e.uid] ?? "" : ""}</span>
                 ) : (
