@@ -2,6 +2,7 @@ import type { Room } from "@colyseus/sdk"
 import type { User } from "@firebase/auth-types"
 import firebase from "firebase/compat/app"
 import { useEffect, useRef, useState } from "react"
+import pkg from "../../../../package.json"
 import type GameState from "../../../rooms/states/game-state"
 import { GamePhaseState } from "../../../types/enum/Game"
 import {
@@ -19,7 +20,7 @@ import {
   loadStoredReplay,
   type ReplayFileInfo
 } from "../game/recorder"
-import { loadReplay } from "../game/replay-format"
+import { buildSkewMessage, loadReplay } from "../game/replay-format"
 import { ReplayRoom, type ReplayManifest } from "../game/replay-room"
 import { useAppDispatch, useAppSelector } from "../hooks"
 import { rooms } from "../network"
@@ -33,6 +34,10 @@ import "./component/replay/replay-readonly.css"
 import "./component/replay/replay-ui.css" // overlay/file-picker styles (needed before ReplayControls mounts)
 import Game, { getGameContainer, reattachReplayRoom } from "./game"
 import { clearPortraitBase64Cache } from "./component/game/game-pokemon-portrait"
+
+// The build running this viewer, read from package.json the same way the recorder stamps it into the file
+// header (recorder.ts GAME_BUILD). Compared against the recorded build on load to warn on schema skew.
+const RUNNING_BUILD = { version: pkg.version, assetsVersion: pkg.assetsVersion }
 
 // The own-POV action controls (lock shop, reroll, buy XP, buy from shop, pick a proposition) are
 // rendered by the unchanged game UI and would call into the (no-op) ReplayRoom.send — i.e. they look
@@ -88,6 +93,7 @@ export default function Replay() {
   const [playing, setPlaying] = useState(false)
   const [seeking, setSeeking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [buildSkew, setBuildSkew] = useState<string | null>(null) // set at load when the recording's build != the running build; a dismissible banner
   const [gen, setGen] = useState(0) // keys the mounted <Game/>; bumps only on the initial mount (seeks re-attach in place)
   const [showGame, setShowGame] = useState(false) // <Game/> mounts once and stays mounted; seeks re-attach the scene
   const [seekEpoch, setSeekEpoch] = useState(0) // bumps per (re)boot to (re)run the wait-for-scene → startPlayback effect
@@ -269,6 +275,11 @@ export default function Replay() {
 
   const loadManifest = (manifest: ReplayManifest) => {
     manifestRef.current = manifest
+    // Warn (non-blocking) when the recording's stamped build differs from this client's: a structural
+    // schema change makes per-frame patches throw and silently skip, degrading to a frozen/partial scene.
+    // We still attempt playback — same-shape patch releases usually decode fine — but the banner explains
+    // the degradation instead of leaving it mysterious. (Banner rendered below; dismissible.)
+    setBuildSkew(buildSkewMessage(manifest.game, RUNNING_BUILD))
     // Build the index (phase/stage boundaries + eliminations + per-player event log) for the skip controls,
     // timeline markers, and event log. Synchronous on purpose: it runs while the CSS-animated "Loading
     // replay" spinner is up (pick() / the served-file path switch to it first), and boot() reveals the
@@ -502,6 +513,22 @@ export default function Replay() {
     )
   return (
     <>
+      {/* Non-blocking build-skew banner: the recording was made on a different game build, so playback may
+          be incomplete. Sits above the scene (doesn't cover it) and is dismissible — playback continues. */}
+      {buildSkew && (
+        <div className="replay-build-banner" role="status">
+          <span className="replay-build-banner-icon">⚠</span>
+          <span className="replay-build-banner-text">{buildSkew}</span>
+          <button
+            type="button"
+            className="replay-build-banner-dismiss"
+            aria-label="Dismiss"
+            onClick={() => setBuildSkew(null)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {/* <Game/> mounts once and stays mounted for the whole session — seeks re-attach the scene in
           place (reattachReplayRoom) rather than remount, so the Phaser game and its loaded assets
           persist. `gen` keys a clean boundary per mount (only the initial load bumps it).
@@ -697,6 +724,14 @@ function ReplayLibrary({
                     <span className="replay-row-meta">
                       {formatSize(f.bytes)}
                       {f.game ? ` · ${f.game.version}` : ""}
+                      {f.game && buildSkewMessage(f.game, RUNNING_BUILD) ? (
+                        <span
+                          className="replay-row-skew"
+                          title="Recorded on a different game build — playback may be incomplete"
+                        >
+                          other build
+                        </span>
+                      ) : null}
                     </span>
                   </div>
                   {confirmDelete === f.roomId ? (

@@ -483,3 +483,61 @@
   line-height: 1.45;
   color: var(--color-fg-secondary);
 }
+
+/* library row tag for a recording made on a different game build (reuses buildSkewMessage) */
+.replay-row-skew {
+  display: inline-block;
+  margin-left: 0.5em;
+  padding: 0.05em 0.45em;
+  border-radius: 999px;
+  font-size: 0.92em;
+  font-weight: 600;
+  color: var(--color-bg-secondary, #141821);
+  background: var(--color-fg-gold);
+  vertical-align: baseline;
+}
+
+/* non-blocking build-skew banner: pinned across the top of the viewer, above the scene. The recording was
+   made on a different game build, so playback may be incomplete — explained here rather than as a silent
+   freeze. Amber (gold), dismissible; doesn't cover the board (the controls/log sit elsewhere). */
+.replay-build-banner {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1400; /* under the blocking loading/seeking overlays (1500), over the HUD */
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  max-width: min(720px, 92vw);
+  margin-top: 0.5em;
+  padding: 0.55em 0.7em 0.55em 0.9em;
+  border-radius: 8px;
+  border: var(--border-thin);
+  background: var(--color-bg-tertiary);
+  box-shadow: var(--shadow-clickable);
+  color: var(--color-fg-primary);
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+.replay-build-banner-icon {
+  flex-shrink: 0;
+  color: var(--color-fg-gold);
+  font-size: 1.1em;
+}
+.replay-build-banner-text {
+  min-width: 0;
+}
+.replay-build-banner-dismiss {
+  flex-shrink: 0;
+  margin-left: 0.2em;
+  padding: 0 0.3em;
+  border: none;
+  background: transparent;
+  color: var(--color-fg-secondary);
+  font-size: 1em;
+  cursor: pointer;
+}
+.replay-build-banner-dismiss:hover {
+  color: var(--color-fg-primary);
+}

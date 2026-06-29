@@ -1,4 +1,5 @@
 import { Room, SchemaSerializer } from "@colyseus/sdk"
+import pkg from "../../../../package.json"
 import { rooms } from "../network"
 import { preference, subscribeToPreference } from "../preferences"
 import store from "../stores"
@@ -58,10 +59,16 @@ export function resetActiveGameRoom() {
   worker?.postMessage({ type: "close" })
 }
 
-// The game build a recording was made in. TODO: source from a build-time constant once available.
+// The game build a recording was made in, stamped into every file's header so the viewer can warn on a
+// build mismatch (see buildSkewMessage / the load-time skew banner). Sourced at build time from
+// package.json — the same import the rest of the client uses for its version (auth.tsx, loading-manager,
+// pokemon.ts). `version` is the human-readable patch ("6.10.1"); `assetsVersion` is the finer, dated
+// build discriminator that changes between deploys even when `version` doesn't (it rides the live JS
+// bundle). `serializerId` records the decode path — Colyseus's schema serializer — which the reader's
+// state decode is reflection-driven over.
 const GAME_BUILD = {
-  version: "6.10.1",
-  commit: "deployed",
+  version: pkg.version,
+  assetsVersion: pkg.assetsVersion,
   serializerId: "schema"
 }
 

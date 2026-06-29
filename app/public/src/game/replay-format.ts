@@ -147,7 +147,7 @@ export function encodeHeaderV1(manifest: {
 export interface ReplayHeaderMeta {
   format: string
   schemaVersion: number
-  game: { version: string; commit: string; serializerId: string }
+  game: { version: string; assetsVersion: string; serializerId: string }
   room: string
   viewerUid: string
   recordedAt: string
@@ -172,6 +172,46 @@ export function readReplayHeader(bytes: Uint8Array): ReplayHeaderMeta | null {
   } catch {
     return null
   }
+}
+
+/** Compare a recording's stamped build (`manifest.game`) against the build running the viewer, returning a
+ * one-line human message when they differ, or null when they match (or the recorded build is unknown).
+ *
+ * State decode is reflection-driven (the schema definition rides the handshake frame), so a balance patch —
+ * same schema shape, different numbers — plays back correctly with no gating. The case this guards is a
+ * STRUCTURAL schema change between record and playback: `serializer.patch` then throws per frame, and
+ * `applyNext`/`buildReplayIndex` swallow those throws (skip-and-continue), so playback silently degrades to a
+ * frozen / partial scene. The viewer shows this message as a non-blocking banner so the degradation is
+ * explained rather than mysterious — we still attempt playback (a same-shape patch release usually works).
+ *
+ * Pure (no package.json import) so it stays usable from the worker bundle and Node harnesses; the caller
+ * passes the running build (the client reads it from package.json, exactly as it's stamped at record time).
+ * Defensive about missing fields: an absent recorded `version` is treated as unknown (no banner), and the
+ * finer `assetsVersion` check only fires when both sides carry it (older files stamped before this field
+ * compare on `version` alone). */
+export function buildSkewMessage(
+  recorded:
+    | { version?: string; assetsVersion?: string; serializerId?: string }
+    | null
+    | undefined,
+  running: { version: string; assetsVersion: string; serializerId?: string }
+): string | null {
+  if (!recorded?.version) return null // unknown / foreign header — nothing to compare against
+  if (recorded.version !== running.version)
+    return `This replay was recorded on game version ${recorded.version}; you're running ${running.version}. Some of it may not play back correctly.`
+  if (
+    recorded.serializerId &&
+    running.serializerId &&
+    recorded.serializerId !== running.serializerId
+  )
+    return `This replay was recorded with a different state format (${recorded.serializerId} vs ${running.serializerId}). Some of it may not play back correctly.`
+  if (
+    recorded.assetsVersion &&
+    running.assetsVersion &&
+    recorded.assetsVersion !== running.assetsVersion
+  )
+    return `This replay was recorded on a different build of ${running.version} (${recorded.assetsVersion} vs ${running.assetsVersion}). Most of it should play back, but some details may differ.`
+  return null
 }
 
 /** Encode ONE frame record for streaming append. `prevT` = the previous frame's t; pass null for the

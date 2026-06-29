@@ -35,7 +35,7 @@ export interface ReplayFileInfo {
   recordedAt: string | null
   mtime: number
   bytes: number
-  game: { version: string; commit: string } | null
+  game: { version: string; assetsVersion: string } | null
   viewerUid: string | null
 }
 
@@ -84,7 +84,9 @@ function summariseEntry(e: RawReplayEntry): ReplayFileInfo {
     recordedAt: meta?.recordedAt ?? null,
     mtime: e.mtime,
     bytes: e.bytes,
-    game: meta ? { version: meta.game.version, commit: meta.game.commit } : null,
+    game: meta
+      ? { version: meta.game.version, assetsVersion: meta.game.assetsVersion }
+      : null,
     viewerUid: meta?.viewerUid ?? null
   }
 }

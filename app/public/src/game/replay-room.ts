@@ -29,7 +29,7 @@ export interface ReplayFrame {
 export interface ReplayManifest {
   format: string
   schemaVersion: number
-  game: { version: string; commit: string; serializerId: string }
+  game: { version: string; assetsVersion: string; serializerId: string }
   room: string
   viewerUid: string
   recordedAt: string
