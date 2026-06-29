@@ -788,8 +788,8 @@ function ReplayLibrary({
               and eliminations
             </li>
             <li>
-              in-combat <strong>status effects</strong>, <strong>stat changes</strong>, and{" "}
-              <strong>board effects</strong> — for every board
+              in-combat <strong>status effects</strong>, <strong>stat changes</strong>,{" "}
+              <strong>board effects</strong>, and each fight's <strong>weather</strong> — for every board
             </li>
             <li>
               <strong>digs</strong>, <strong>cooks</strong>, and <strong>emotes</strong> — shown under the
@@ -805,8 +805,7 @@ function ReplayLibrary({
             <li>
               <strong>Combat casts &amp; damage</strong> — ability casts and damage / heal numbers follow the
               recorder's camera (captured only for the board being watched), so scouting another board
-              mid-fight gets you its casts but misses your own; the fight's <strong>weather</strong> is
-              recorded only for the recording player's own fight.
+              mid-fight gets you its casts but misses your own.
             </li>
             <li>
               <strong>Income breakdown</strong> — the per-round income split (base / interest / streak) is

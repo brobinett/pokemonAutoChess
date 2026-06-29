@@ -1,8 +1,11 @@
 import { Client, type Room } from "@colyseus/sdk"
 import type { User } from "@firebase/auth-types"
 import firebase from "firebase/compat/app"
+import { installDevAuthShim } from "./dev-auth"
+
+installDevAuthShim()
+
 import type { server } from "../../app.config.ts"
-import { FIREBASE_CONFIG } from "../../config"
 import type AfterGameState from "../../rooms/states/after-game-state"
 import type GameState from "../../rooms/states/game-state"
 import type LobbyState from "../../rooms/states/lobby-state"
@@ -30,10 +33,9 @@ logger.info(`Colyseus endpoint: ${endpoint}`)
 export const client = new Client<typeof server>(endpoint)
 
 export function authenticateUser() {
-  if (!firebase.apps.length) {
-    firebase.initializeApp(FIREBASE_CONFIG)
-  }
-
+  // Dev-auth shim: firebase.auth() is monkey-patched. onAuthStateChanged
+  // fires immediately if a profile is selected, else we reject so callers
+  // navigate back to the login page.
   return new Promise<User>((resolve, reject) => {
     firebase.auth().onAuthStateChanged(async (user) => {
       if (!user) return reject(CloseCodes.USER_NOT_AUTHENTICATED)

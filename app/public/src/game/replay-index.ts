@@ -74,7 +74,7 @@ export type ReplayEventType =
   | "town" // a town encounter NPC appeared (state.townEncounter — shared, game-level)
   | "region" // the POV took a portal to a new region (player.map changed)
   | "artifact" // a Normal-synergy scarf was crafted (scarvesItems; Fairy wands log via `pick`)
-  | "weather" // the POV's fight started with weather (its simulation's weather, ≠ NEUTRAL)
+  | "weather" // a fight started with weather (its simulation's weather, ≠ NEUTRAL) — owner-tagged, any board
   | "berries" // the POV's berry-tree species repopulated (berryTreesType — changes on each region)
   | "rule" // a special game rule is in effect (state.specialGameRule — scribble modes; once, at start)
   | "status" // a combat status flipped on for a unit on any board, owner-tagged (burn/poison/freeze/… — entity.status)
@@ -708,7 +708,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   // Per-player snapshot of the previous state frame, keyed by uid — the diff baseline for
   // derivePlayerStateEvents (Tab 2 = everyone). Undefined for a player until its first state frame.
   const prevByPlayer = new Map<string, PlayerSnapshot>()
-  let povWeather: string | undefined // the POV simulation's weather (per fight) — single-POV combat
+  const prevWeatherBySim = new Map<string, string>() // simId → its last non-NEUTRAL weather (all boards)
 
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i]
@@ -826,33 +826,39 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       lifePrev.set(uid, life)
     })
 
-    // --- POV-only overlays (income breakdown + the POV fight's weather) ---
-    // These are captured ONLY for the recorder's spectated fight (a POV client.send / its own
-    // simulation), so they stay single-POV and are tagged with the viewer uid.
+    // --- POV-only income breakdown ---
+    // PLAYER_INCOME is a POV-only client.send carrying just the total; resolve its base/interest/streak
+    // split now that this PICK frame's interest/streak have landed (it's the recorder's own, viewer-tagged).
     const pov = viewerUid ? state.players?.get(viewerUid) : undefined
-    if (pov) {
-      // Resolve a deferred round-income breakdown now that this PICK frame's interest/streak have landed.
+    if (pov && pendingIncome && ph === GamePhaseState.PICK) {
       // base = total − interest − streak (= 5 + red scales, always ≥ 0 for a real round income). The
       // PICK-phase gate rejects combat/kill gold (same PLAYER_INCOME message, sent during FIGHT) → it
-      // falls back to the plain total. We resolve only at PICK so the values are this round's, not stale.
-      if (pendingIncome && ph === GamePhaseState.PICK) {
-        const interest = typeof pov.interest === "number" ? pov.interest : 0
-        const streak = Math.min(typeof pov.streak === "number" ? pov.streak : 0, 5)
-        const base = pendingIncome.total - interest - streak
-        // The real base is always 5 + 5·(red scales) — a positive multiple of 5. Show the breakdown only
-        // when it works out to that, which also rejects the rare frame where a loss-round streak reset
-        // hasn't been patched in yet (base would come out 2–4) → that income falls back to the plain total.
-        if (base >= 5 && base % 5 === 0) incomeInfo[pendingIncome.idx] = { base, interest, streak }
-        pendingIncome = null
-      }
-      // Weather — the POV's own fight starts with a weather (its simulation's weather); NEUTRAL = none.
-      const povSim = state.simulations?.get(pov.simulationId) as { weather?: string } | undefined
-      const weather = povSim?.weather
-      if (weather && weather !== "NEUTRAL" && weather !== povWeather) {
-        actions.push({ t: f.t, type: "weather", label: `Weather: ${weatherName(weather)}`, uid: viewerUid })
-      }
-      povWeather = weather
+      // falls back to the plain total. The real base is always 5 + 5·(red scales) — a positive multiple of
+      // 5; show the breakdown only when it works out to that (also rejects the rare frame where a loss-round
+      // streak reset hasn't been patched in yet → base 2–4 → falls back to the plain total).
+      const interest = typeof pov.interest === "number" ? pov.interest : 0
+      const streak = Math.min(typeof pov.streak === "number" ? pov.streak : 0, 5)
+      const base = pendingIncome.total - interest - streak
+      if (base >= 5 && base % 5 === 0) incomeInfo[pendingIncome.idx] = { base, interest, streak }
+      pendingIncome = null
     }
+
+    // --- All-boards weather ---
+    // sim.weather syncs for every simulation (no @view), so each fight's weather is recoverable, not just
+    // the recorder's. Emit it owner-tagged to each real player in the sim (so it shows under their chip)
+    // when their fight's weather first turns non-NEUTRAL. Low-volume (≈ one per fight).
+    const simsForWeather = state.simulations as unknown as
+      | { forEach?: (cb: (sim: { weather?: string; bluePlayerId?: string; redPlayerId?: string }, id: string) => void) => void }
+      | undefined
+    simsForWeather?.forEach?.((sim, simId) => {
+      const weather = sim.weather
+      if (!weather || weather === "NEUTRAL" || weather === prevWeatherBySim.get(simId)) return
+      prevWeatherBySim.set(simId, weather)
+      for (const owner of [sim.bluePlayerId, sim.redPlayerId]) {
+        if (owner && state.players?.get(owner)?.simulationId === simId)
+          actions.push({ t: f.t, type: "weather", label: `Weather: ${weatherName(weather)}`, uid: owner })
+      }
+    })
 
     // --- All-boards combat (status + stats) ---
     // Diff every simulation's units, owner-tagged (scanFrameCombat handles the ghost/PvE exclusion). A
