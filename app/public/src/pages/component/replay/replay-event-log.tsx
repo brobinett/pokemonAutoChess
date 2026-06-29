@@ -125,7 +125,7 @@ const COMBAT_SUBLABEL: Record<string, string> = {
 // Drill-down sections for the merged Combat chip. The source note honors the real distinction: casts/damage
 // only exist for the board the recorder was watching, while status/stats are recovered for every board.
 const COMBAT_SECTIONS: { cat: Category; label: string }[] = [
-  { cat: "combat", label: "Casts / damage · recorder's camera" },
+  { cat: "combat", label: "Casts / damage · recorder's PoV" },
   { cat: "status", label: "Status · all boards" },
   { cat: "stats", label: "Stats · all boards" }
 ]

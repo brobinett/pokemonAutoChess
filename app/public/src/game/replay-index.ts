@@ -5,7 +5,7 @@ import type Player from "../../../models/colyseus-models/player"
 import { getPokemonData } from "../../../models/precomputed/precomputed-pokemon-data"
 import { getLevelUpCost } from "../../../models/colyseus-models/experience-manager"
 import { PVEStages } from "../../../models/pve-stages"
-import { BOARD_WIDTH } from "../../../config/game/board"
+import { BOARD_HEIGHT, BOARD_WIDTH } from "../../../config/game/board"
 import { SynergyTriggers } from "../../../config/game/synergies"
 import { BattleResult, GamePhaseState, PokemonActionState } from "../../../types/enum/Game"
 import { ItemRecipe } from "../../../types/enum/Item"
@@ -264,9 +264,38 @@ function unitAt(
   return name
 }
 
+// The player on whose side a board tile (x,y) sits in a simulation — for owner-tagging a BOARD_EVENT (a
+// field/hazard on a tile; its payload carries no player). A unit on the tile gives its team's player; an
+// empty tile falls to the board half (blue fills the bottom rows, red the top — getFirstFreeCell). Returns
+// the owner ONLY when that player's own simulationId points back to this sim, so ghost/PvE sides drop out
+// (matching scanFrameCombat); undefined otherwise → the caller hides it.
+function simTileOwner(
+  state: GameState,
+  simId: string | undefined,
+  x: number | undefined,
+  y: number | undefined
+): string | undefined {
+  if (!simId || x == null || y == null) return undefined
+  const sim = state.simulations?.get(simId) as
+    | {
+        bluePlayerId?: string
+        redPlayerId?: string
+        blueTeam?: { forEach?: (cb: (e: { positionX?: number; positionY?: number }) => void) => void }
+        redTeam?: { forEach?: (cb: (e: { positionX?: number; positionY?: number }) => void) => void }
+      }
+    | undefined
+  if (!sim) return undefined
+  let side: "blue" | "red" | undefined
+  sim.blueTeam?.forEach?.((e) => { if (e?.positionX === x && e?.positionY === y) side = "blue" })
+  sim.redTeam?.forEach?.((e) => { if (e?.positionX === x && e?.positionY === y) side = "red" })
+  if (!side) side = y < BOARD_HEIGHT / 2 ? "blue" : "red" // empty tile → board half (blue = bottom rows)
+  const owner = side === "blue" ? sim.bluePlayerId : sim.redPlayerId
+  return owner && state.players?.get(owner)?.simulationId === simId ? owner : undefined
+}
+
 // Which player's board (bench + board) currently holds `unitId`. Used to attribute a `room.broadcast`
-// DIG / COOK (payload `pokemonId` = the digging/cooking unit) to its owner, so other players' broadcasts
-// can be filtered out of this single-POV log. Returns undefined if the unit isn't in any board this frame.
+// DIG / COOK (payload `pokemonId` = the digging/cooking unit) to its owner so the row shows under that
+// player. Returns undefined if the unit isn't on any board this frame.
 function playerOwningUnit(state: GameState, unitId: string): string | undefined {
   let owner: string | undefined
   state.players?.forEach((p, uid) => {
@@ -716,9 +745,9 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       }
       // Owner-tag the `room.broadcast` player events (every client receives all of them, so the capture
       // has every player's): DIG / COOK → the digging/cooking unit's owner (payload.pokemonId), SHOW_EMOTE
-      // → payload.id (the emoting player). The row shows under that player's chip (default POV-only). BOARD_
-      // EVENT stays POV-scoped for now — its payload is just (simulationId, x, y), so owner-tagging it needs
-      // tile→team resolution (a sim has two players); deferred, so other boards' board-events are hidden.
+      // → payload.id (the emoting player), BOARD_EVENT → the player on whose side of the fight the tile sits
+      // (simTileOwner). The row shows under that player's chip (default POV-only). A non-resolved or
+      // ghost/PvE-side board-event is hidden (foreignFrames).
       if (viewerUid) {
         if (f.type === "SHOW_EMOTE") {
           const id = (f.payload as { id?: string })?.id
@@ -732,9 +761,10 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
             if (site) digInfo[i] = site
           }
         } else if (hasState && f.type === "BOARD_EVENT") {
-          const simId = (f.payload as { simulationId?: string })?.simulationId
-          const povSim = ser.getState().players?.get(viewerUid)?.simulationId
-          if (simId && povSim && simId !== povSim) foreignFrames.push(i)
+          const bp = f.payload as { simulationId?: string; x?: number; y?: number }
+          const owner = simTileOwner(ser.getState(), bp?.simulationId, bp?.x, bp?.y)
+          if (owner) combatUnits[i] = { owner }
+          else foreignFrames.push(i)
         }
       }
       // Round-income breakdown: PLAYER_INCOME (a POV-only client.send) carries just the total, but the
