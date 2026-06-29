@@ -80,6 +80,23 @@ let opSeq = 0
 // id -> resolver for a request/reply worker op (download / list / delete). Every such reply carries a
 // numeric `id`; the resolver reads the fields its op cares about (buf / files / error).
 const pendingOps = new Map<number, (r: { buf?: ArrayBuffer; files?: ReplayFileInfo[]; error?: string }) => void>()
+// Register a request/reply resolver with a hard timeout. A worker that fired onerror (script 404 / fatal
+// throw) or hung (no reply ever arrives) must not leave the caller's promise pending forever — on timeout the
+// op is dropped and the resolver is invoked with an error (each caller maps that to its own resolve/reject).
+// The worker is also nulled on onerror (below) so the NEXT op respawns it.
+const OP_TIMEOUT_MS = 15000
+function setPendingOp(
+  id: number,
+  cb: (r: { buf?: ArrayBuffer; files?: ReplayFileInfo[]; error?: string }) => void
+): void {
+  const timer = setTimeout(() => {
+    if (pendingOps.delete(id)) cb({ error: "recording worker timed out" })
+  }, OP_TIMEOUT_MS)
+  pendingOps.set(id, (r) => {
+    clearTimeout(timer)
+    cb(r)
+  })
+}
 function getWorker(): Worker {
   if (!worker) {
     // recorder.worker.ts is built as its own esbuild entry to app/public/dist/client/recorder.worker.js
@@ -107,6 +124,10 @@ function getWorker(): Worker {
       for (const cb of pendingOps.values()) cb({ error: `recording worker error: ${e.message}` })
       pendingOps.clear()
       controller.onWorkerError() // unblock any awaiting flush so the flush chain can't hang
+      // Drop the dead worker so the next getWorker() respawns it (and the retained in-flight batch resends);
+      // otherwise every later postMessage targets a dead worker and hangs forever. onerror fires once and
+      // won't re-fire, so without this the recorder AND the library/download ops are wedged for the session.
+      worker = null
     }
     // Seed the retention cap the moment the worker exists (whoever spawned it — gameplay flush OR the
     // library's list), BEFORE any frames, so the first new-game prune keeps the configured count. Sending
@@ -134,7 +155,7 @@ function triggerBrowserDownload(buf: ArrayBuffer, recordedAt: string): void {
 function fetchReplayBytes(roomId: string): Promise<ArrayBuffer> {
   const id = ++opSeq
   return new Promise<ArrayBuffer>((resolve, reject) => {
-    pendingOps.set(id, (r) =>
+    setPendingOp(id, (r) =>
       r.error || !r.buf ? reject(new Error(r.error ?? "read failed")) : resolve(r.buf)
     )
     getWorker().postMessage({ type: "download", roomId, id })
@@ -335,7 +356,7 @@ export async function downloadReplay(
 export function listReplays(): Promise<ReplayFileInfo[]> {
   const id = ++opSeq
   return new Promise<ReplayFileInfo[]>((resolve) => {
-    pendingOps.set(id, (r) => {
+    setPendingOp(id, (r) => {
       if (r.error) console.warn("[recorder] listReplays:", r.error)
       resolve(r.files ?? [])
     })
@@ -364,7 +385,7 @@ export async function downloadStoredReplay(
 export function deleteStoredReplay(roomId: string): Promise<void> {
   const id = ++opSeq
   return new Promise<void>((resolve, reject) => {
-    pendingOps.set(id, (r) => (r.error ? reject(new Error(r.error)) : resolve()))
+    setPendingOp(id, (r) => (r.error ? reject(new Error(r.error)) : resolve()))
     getWorker().postMessage({ type: "delete", roomId, id })
   })
 }

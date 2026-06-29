@@ -72,6 +72,8 @@ export type RecorderInMessage =
 const DEFAULT_KEEP_RECENT = 2
 
 const errMsg = (e: unknown): string => String((e as Error)?.message ?? e)
+const isQuotaError = (e: unknown): boolean =>
+  e instanceof Error && (e.name === "QuotaExceededError" || /quota/i.test(e.message))
 
 /** Parse a raw entry's header into the list summary; foreign/corrupt headers degrade to nulls (still
  *  listed, orderable by mtime, deletable). */
@@ -161,12 +163,31 @@ export function createRecorderWorker(deps: WorkerDeps) {
         }
         try {
           cur.writer.appendFrames(msg.frames) // atomic: fully appended, or rolled back + throws
-          cur.lastBatchId = batchId
-          deps.post({ type: "ack", roomId: msg.roomId, batchId })
         } catch (e) {
-          // Nothing was written (atomic rollback) → nack; the main thread resends the same batch later.
+          // Atomic rollback → nothing written → nack so the main thread resends the same batch. On a quota
+          // error, first reclaim space by hard-pruning sealed recordings (keep 0; the active file is
+          // protected) so the resend can succeed instead of buffering frames in RAM unbounded.
+          if (deps.prune && isQuotaError(e)) {
+            try {
+              await deps.prune(0, msg.roomId)
+            } catch {
+              // best effort — if it can't reclaim, the resend nacks again and the frames stay buffered
+            }
+          }
           deps.post({ type: "nack", roomId: msg.roomId, batchId, error: errMsg(e) })
+          break
         }
+        // Appended (durably on disk). Advance lastBatchId BEFORE flushing so a flush throw can't cause a
+        // resend to re-append this batch (a duplicate). fsync so the ack means "durable", not just "written";
+        // a flush failure is logged but does NOT nack — the bytes are already appended (OPFS persists written
+        // bytes across a reload anyway), so a later flush/close retries the fsync.
+        cur.lastBatchId = batchId
+        try {
+          cur.writer.flush()
+        } catch (e) {
+          console.error("[recorder.worker] flush after append failed", e)
+        }
+        deps.post({ type: "ack", roomId: msg.roomId, batchId })
         break
       }
       case "flush":

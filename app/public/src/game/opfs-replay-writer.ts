@@ -9,8 +9,9 @@ import type { ReplayFrame, ReplayManifest } from "./replay-room"
 // Lifecycle: at game-join open a handle and `new ReplayFileWriter(handle, { meta })` — an empty file gets
 // the header; a non-empty one (a reconnect AFTER a page reload re-opened the same `${roomId}` file) is
 // appended to with NO new header. appendFrame() encodes one frame record at the running offset; flush()
-// fsyncs periodically; close() flushes + releases the handle so the main thread can read the file for
-// download. Memory stays tiny — only the running offset + prevT live here, never the whole match.
+// fsyncs (the worker calls it after each acked batch and on close); close() flushes + releases the handle so
+// the main thread can read the file for download. Memory stays tiny — only the running offset + prevT live
+// here, never the whole match.
 
 /** The subset of FileSystemSyncAccessHandle this writer needs (so tests can fake it). */
 export interface ReplayFileHandle {
@@ -124,10 +125,16 @@ export class ReplayFileWriter {
     this.handle.flush()
   }
 
-  /** Flush and release the handle (so the file can be read for download). */
+  /** Flush, then release the handle (so the file can be read for download). flush() is in a try/finally so a
+   *  flush throw (a final quota/IO error, exactly when close runs under pressure) still releases the exclusive
+   *  sync handle — otherwise the lock on `${roomId}.colreplay` leaks for the page session and a later
+   *  Watch/Download/Delete of it throws NoModificationAllowedError. */
   close(): void {
-    this.handle.flush()
-    this.handle.close()
+    try {
+      this.handle.flush()
+    } finally {
+      this.handle.close()
+    }
   }
 
   /** Current file size (bytes written so far). */
