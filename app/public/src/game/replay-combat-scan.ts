@@ -19,7 +19,7 @@ export function prettyName(v: string | undefined | null): string {
     .join(" ")
 }
 
-// All 37 status fields (the names look odd but each IS a status); poisonStacks is a counter, the rest
+// All 36 status fields (the names look odd but each IS a status); poisonStacks is a counter, the rest
 // booleans (false→true = applied).
 export const STATUS_FIELDS = [
   "burn", "silence", "fatigue", "poisonStacks", "freeze", "protect", "sleep",
@@ -85,10 +85,14 @@ export function scanCombatEntity(
     const cur = st?.[k]
     statusSnap[k] = cur
     const was = prev?.status?.[k]
+    // first-sight guard (`was != null`, mirroring the stat branch below): `was` is undefined on the frame
+    // an entity first appears, so without it any status that's ALREADY set emits as a fresh false→true
+    // application. Many statuses are set in the Simulation constructor (synergy fields, rune protect,
+    // resurrection) before the first sync — those are fight-start baselines, not in-combat applications.
     if (k === "poisonStacks") {
-      if (typeof cur === "number" && cur > 0 && cur !== was)
+      if (typeof cur === "number" && cur > 0 && was != null && cur !== was)
         out.push({ t, type: "status", label: `${name} · Poisoned (${cur})`, uid: ownerUid, key: "Poison" })
-    } else if (cur === true && was !== true) {
+    } else if (cur === true && was != null && was !== true) {
       out.push({ t, type: "status", label: `${name} · ${statusName(k)}`, uid: ownerUid, key: statusName(k) })
     }
   }
