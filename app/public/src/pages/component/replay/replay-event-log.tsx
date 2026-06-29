@@ -83,8 +83,8 @@ const CATEGORY_OF: Record<string, Category> = {
   // flavor — cosmetic chatter
   SHOW_EMOTE: "flavor",
   NPC_DIALOG: "flavor",
-  // board effect — a tile hazard/field appeared in the POV's fight (POV-scoped in replay-index); a combat
-  // event, so it rides the Combat chip rather than its own.
+  // board effect — a tile hazard/field appeared in a fight; owner-tagged per board via simTileOwner in
+  // replay-index (ghost/PvE sides hidden), so it rides the Combat chip under the owning player, not its own.
   BOARD_EVENT: "combat",
   // engine / internal — board-sim bookkeeping + renderer setup + rare system/error frames (off by default)
   CLEAR_BOARD_EVENT: "engine", // the paired "expired/cleared" firehose (480–2309/game) — stays engine
@@ -123,10 +123,13 @@ const COMBAT_SUBLABEL: Record<string, string> = {
   BOARD_EVENT: "Board effects",
   WEATHER: "Weather"
 }
-// Drill-down sections for the merged Combat chip. The source note honors the real distinction: casts/damage
-// only exist for the board the recorder was watching, while status/stats are recovered for every board.
-const COMBAT_SECTIONS: { cat: Category; label: string }[] = [
-  { cat: "combat", label: "Casts / damage · recorder's PoV" },
+// Drill-down sections for the merged Combat chip. The source note honors the real distinction: casts/damage/
+// heal/text are broadcastToSpectators (only the board the recorder was watching), while board effects,
+// weather, status and stats are recovered for every board (owner-tagged). The `combat` category is split
+// across the first two sections by sub-type (`only`); status/stats are their own categories.
+const COMBAT_SECTIONS: { cat: Category; label: string; only?: string[] }[] = [
+  { cat: "combat", label: "Casts / damage / heal · recorder's PoV", only: ["ABILITY", "POKEMON_DAMAGE", "POKEMON_HEAL", "DISPLAY_TEXT"] },
+  { cat: "combat", label: "Board effects / weather · all boards", only: ["BOARD_EVENT", "WEATHER"] },
   { cat: "status", label: "Status · all boards" },
   { cat: "stats", label: "Stats · all boards" }
 ]
@@ -460,6 +463,19 @@ export default function ReplayEventLog({
     }
   }, [playerOn])
 
+  // Reconcile the persisted ON-set against THIS recording's roster. The set is stored under one global key
+  // but keyed by per-recording uids (opponents — and the POV uid of a downloaded replay — differ every
+  // game), so a stale selection from another replay would match no rows and never re-default. Prune to
+  // players that exist here; an empty intersection falls back to the POV. Idempotent (re-runs settle once
+  // every member is valid), so it can't loop.
+  useEffect(() => {
+    if (!index) return
+    const roster = index.playerNames
+    const pruned = [...playerOn].filter((u) => roster[u] !== undefined)
+    if (pruned.length === playerOn.size) return
+    setPlayerOn(pruned.length ? new Set(pruned) : new Set([viewerUid]))
+  }, [index, viewerUid, playerOn])
+
   // restore the saved size + persist on resize. The CSS resize handle mutates the element directly;
   // a ResizeObserver writes the new size back so it survives a reload.
   useEffect(() => {
@@ -716,10 +732,12 @@ export default function ReplayEventLog({
         <div className="rel-subfilters">
           {expanded === "combat"
             ? COMBAT_SECTIONS.map((sec) => {
-                const subs = [...(subtypesByCat.get(sec.cat) ?? [])].sort()
+                let subs = [...(subtypesByCat.get(sec.cat) ?? [])].sort()
+                const only = sec.only
+                if (only) subs = subs.filter((s) => only.includes(s))
                 if (!subs.length) return null
                 return (
-                  <Fragment key={sec.cat}>
+                  <Fragment key={sec.label}>
                     <span className="rel-subhead">{sec.label}</span>
                     {subs.map((sub) =>
                       renderSubchip(sec.cat, sub, sec.cat === "combat" ? COMBAT_SUBLABEL[sub] ?? prettyName(sub) : sub)
