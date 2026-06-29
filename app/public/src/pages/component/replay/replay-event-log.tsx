@@ -14,11 +14,33 @@ import "./replay-event-log.css"
 // lies for self/ally effects, and the real target is the adjacent damage/heal row's anyway.
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
-// Default dock: right edge ~6vw from the screen edge (aligned under the DPS meter, which clears the
-// right-edge portrait column), top below the DPS meter's expanded extent. Drag/resize take over from
-// here; both persist (localStorage).
+// Fallback dock (used only if the layout anchors below can't be measured): right edge ~6vw from the
+// screen edge, top below the DPS meter. Drag/resize take over from here; both persist (localStorage).
 const DEFAULT_TOP = "57vh"
 const DEFAULT_RIGHT = "6vw"
+
+// The default box is measured from the live game layout so the log fills the right-hand column: vertically
+// between the (minimized) battle-stats pane and the playback controls, horizontally between the board and
+// the player portraits. The DPS meter already sits right of the board, so its LEFT edge is our left anchor;
+// `#game-players` (the portrait column) is the right anchor; `.replay-controls` (the bar) is the bottom.
+// GAP ≈ the breathing room the game leaves between the controls and the shop. Returns null if the anchors
+// aren't on screen yet (→ the fallback dock applies until they are).
+const GAP = 8
+function measureDefaultBox(): { left: number; top: number; width: number; height: number } | null {
+  if (typeof document === "undefined") return null
+  // Right + bottom anchors are always on screen; require them. The battle-stats pane is FIGHT-only, so
+  // it's optional — when it's up we align the top/left to it; otherwise we fall back to a right-column box.
+  const players = document.querySelector("#game-players")?.getBoundingClientRect()
+  const bar = document.querySelector(".replay-controls")?.getBoundingClientRect()
+  if (!players || !bar) return null
+  const dps = document.querySelector(".game-dps-meter")?.getBoundingClientRect()
+  const rightEdge = players.left - GAP
+  const left = dps ? Math.round(dps.left) : Math.round(rightEdge - 360)
+  const top = dps ? Math.round(dps.bottom + GAP) : Math.round(window.innerHeight * 0.12)
+  const width = Math.max(240, Math.round(rightEdge - left))
+  const height = Math.max(140, Math.round(bar.top - GAP - top))
+  return { left, top, width, height }
+}
 
 // Toggleable event log for the replay viewer: lists the actual frames the replay is rebuilt from —
 // the typed ROOM_DATA messages (abilities, damage, heals, income, eliminations, final rank…) plus the
@@ -333,6 +355,23 @@ export default function ReplayEventLog({
   const [pos, setPos] = useState<{ x: number; y: number } | null>(
     saved.x != null && saved.y != null ? { x: saved.x, y: saved.y } : null
   )
+  // The layout-measured default box. Supplies position AND/OR size per-dimension — whichever the user
+  // hasn't overridden (a saved drag wins position, a saved resize wins size; see posStyle + the size
+  // effect). Recomputed on open + window resize so it adapts. null → fallback dock. Skipped only when the
+  // user has BOTH dragged and resized (it would never be used).
+  const [autoBox, setAutoBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
+  const fullyPlaced = saved.x != null && saved.w != null
+  useEffect(() => {
+    if (!open || fullyPlaced) return
+    // measure after layout settles (the panel + game HUD are on screen); also track window resizes
+    const measure = () => setAutoBox(measureDefaultBox())
+    const id = requestAnimationFrame(measure)
+    window.addEventListener("resize", measure)
+    return () => {
+      cancelAnimationFrame(id)
+      window.removeEventListener("resize", measure)
+    }
+  }, [open, fullyPlaced])
 
   // Drag by the header (same hand-rolled pattern as the control bar — avoids the shared hook's
   // mount-time on-screen clamp, which mis-fires before the panel has laid out). Clicks on the chips /
@@ -406,9 +445,17 @@ export default function ReplayEventLog({
     if (!open) return
     const el = panelRef.current
     if (!el) return
+    // The user's saved size wins; otherwise apply the layout-measured default (so the panel fills the
+    // right column). Width/height are set imperatively to keep the CSS resize handle the source of truth.
     if (saved.w) el.style.width = `${saved.w}px`
+    else if (autoBox) el.style.width = `${autoBox.width}px`
     if (saved.h) el.style.height = `${saved.h}px`
+    else if (autoBox) el.style.height = `${autoBox.height}px`
     const ro = new ResizeObserver(() => {
+      // keep the virtualization viewport in sync with the live panel height, or a resize leaves the new
+      // space below the last windowed row blank until something else re-measures (a filter toggle).
+      const lh = listRef.current?.clientHeight
+      if (lh) setViewportH(lh)
       try {
         const b = JSON.parse(localStorage.getItem(BOX_KEY) || "{}")
         localStorage.setItem(BOX_KEY, JSON.stringify({ ...b, w: el.offsetWidth, h: el.offsetHeight }))
@@ -418,7 +465,7 @@ export default function ReplayEventLog({
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [open, saved])
+  }, [open, saved, autoBox])
 
   const playerNames = index?.playerNames ?? {}
 
@@ -541,10 +588,12 @@ export default function ReplayEventLog({
 
   if (!open) return null
   const toggle = (k: Category) => setEnabled((e) => ({ ...e, [k]: !e[k] }))
-  // default dock until dragged: right-anchored under the DPS meter; once dragged, absolute top-left.
+  // Position: the user's dragged spot wins; else the layout-measured default; else the fallback dock.
   const posStyle: React.CSSProperties = pos
     ? { left: pos.x, top: pos.y }
-    : { right: DEFAULT_RIGHT, top: DEFAULT_TOP }
+    : autoBox
+      ? { left: autoBox.left, top: autoBox.top }
+      : { right: DEFAULT_RIGHT, top: DEFAULT_TOP }
   return (
     <div ref={panelRef} className={`replay-eventlog my-container${multiPlayer ? " multi-player" : ""}`} style={posStyle}>
       <header className="rel-head" onMouseDown={onHeadDown}>
@@ -562,10 +611,12 @@ export default function ReplayEventLog({
         <button className="rel-close" title="Close" onClick={onClose}>×</button>
       </header>
       <div className="rel-filters">
-        {CATEGORIES.map((c) => {
+        {/* Only categories that actually occur in this recording get a chip — same data-driven rule as the
+            drill-down sub-types, so there's no empty chip (e.g. Flavor with no emotes) to filter to nothing. */}
+        {CATEGORIES.filter((c) => subtypesByCat.has(c.key)).map((c) => {
           const drillable = (subtypesByCat.get(c.key)?.size ?? 0) > 1
           return (
-            <span key={c.key} className="rel-chip-wrap">
+            <span key={c.key} className={`rel-chip-wrap${drillable ? " has-caret" : ""}`}>
               <button
                 className={`rel-chip rel-chip-${c.key}${enabled[c.key] ? " on" : ""}`}
                 title={`Toggle ${c.label} events`}

@@ -94,7 +94,8 @@
   display: inline-flex;
   align-items: stretch;
 }
-.rel-chip-wrap .rel-chip {
+/* flatten the chip's right edge only when a caret actually abuts it — a caretless chip keeps its full pill */
+.rel-chip-wrap.has-caret .rel-chip {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }

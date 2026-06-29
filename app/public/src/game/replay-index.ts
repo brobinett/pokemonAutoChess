@@ -158,11 +158,12 @@ export interface ReplayIndex {
   // uid → the player's in-game name (display name for the per-player log column / tab labels). Built
   // from the final reconstructed state, so it covers every player that appeared.
   playerNames: Record<string, string>
-  // Per combat-message frame (keyed by index in manifest.frames): the unit names resolved by tile
-  // (caster/target — the payloads identify units by (simulationId, x, y), looked up against the decoded
-  // sim positions) AND `owner` = the recorder's camera (spectatedPlayerId) at that frame. These messages
-  // are camera-scoped (broadcastToSpectators), so `owner` is the board the recorder was watching — the
-  // log tags the row to it, so casts captured by scouting another board show under THAT player.
+  // Per message-frame (keyed by index in manifest.frames): the combat unit names resolved by tile
+  // (caster/target — payloads identify units by (simulationId, x, y), looked up against the decoded sim
+  // positions) AND `owner` = the player the row is tagged to (the per-player filter slices on it). For
+  // camera-scoped combat (ABILITY/DAMAGE/HEAL/DISPLAY_TEXT) `owner` is the recorder's camera at that frame
+  // (the watched board); for room-broadcast player events (DIG/COOK = digging player, SHOW_EMOTE = emoting
+  // player) it's the resolved owner — so a scouted cast / an opponent's dig shows under THAT player.
   combatUnits: Record<number, { caster?: string; target?: string; owner?: string }>
   // DIG message frames (own POV only) → the dig site resolved from POV state: the digging unit's board
   // tile (x,y) and the hole depth AFTER this dig (groundHoles[(y-1)·BOARD_WIDTH+x] + 1, capped at 5).
@@ -713,23 +714,24 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           combatUnits[i] = { target, owner }
         }
       }
-      // POV-scope the `room.broadcast` player events: DIG / COOK belong to the digging/cooking unit's
-      // owner (payload.pokemonId), SHOW_EMOTE to payload.id (a uid). Flag the ones that aren't the POV
-      // so the event log can hide them. Keep when the owner can't be resolved (don't drop a POV event).
+      // Owner-tag the `room.broadcast` player events (every client receives all of them, so the capture
+      // has every player's): DIG / COOK → the digging/cooking unit's owner (payload.pokemonId), SHOW_EMOTE
+      // → payload.id (the emoting player). The row shows under that player's chip (default POV-only). BOARD_
+      // EVENT stays POV-scoped for now — its payload is just (simulationId, x, y), so owner-tagging it needs
+      // tile→team resolution (a sim has two players); deferred, so other boards' board-events are hidden.
       if (viewerUid) {
         if (f.type === "SHOW_EMOTE") {
           const id = (f.payload as { id?: string })?.id
-          if (id && id !== viewerUid) foreignFrames.push(i)
+          if (id) combatUnits[i] = { owner: id }
         } else if (hasState && (f.type === "DIG" || f.type === "COOK")) {
           const pid = (f.payload as { pokemonId?: string })?.pokemonId
           const owner = pid ? playerOwningUnit(ser.getState(), pid) : undefined
-          if (owner && owner !== viewerUid) foreignFrames.push(i)
-          else if (f.type === "DIG" && pid && (!owner || owner === viewerUid)) {
-            const site = digSite(ser.getState(), viewerUid, pid)
+          if (owner) combatUnits[i] = { owner }
+          if (f.type === "DIG" && pid) {
+            const site = digSite(ser.getState(), owner ?? viewerUid, pid)
             if (site) digInfo[i] = site
           }
         } else if (hasState && f.type === "BOARD_EVENT") {
-          // A board effect appeared on a tile; broadcast to all, so keep only the POV's own fight.
           const simId = (f.payload as { simulationId?: string })?.simulationId
           const povSim = ser.getState().players?.get(viewerUid)?.simulationId
           if (simId && povSim && simId !== povSim) foreignFrames.push(i)
