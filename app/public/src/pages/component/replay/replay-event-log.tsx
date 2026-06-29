@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { PkmByIndex } from "../../../../../types/enum/Pokemon"
 import { prettyName, type ReplayIndex } from "../../../game/replay-index"
 import type { ReplayRoom } from "../../../game/replay-room"
@@ -108,6 +108,26 @@ const CATEGORIES: { key: Category; label: string }[] = [
   { key: "flavor", label: "Flavor" },
   { key: "positioning", label: "Positioning" },
   { key: "engine", label: "Engine" }
+]
+
+// The combat-family categories share one "Combat" chip — they're all combat, just from different sources
+// (casts/damage are camera-scoped messages; status/stats are all-boards state). The chip toggles the three
+// together; its drill-down breaks them out by source (the section labels below) and then by type.
+const COMBAT_CATS: Category[] = ["combat", "status", "stats"]
+// Combat message types → readable group labels for the drill-down (status/stats already have readable keys).
+const COMBAT_SUBLABEL: Record<string, string> = {
+  ABILITY: "Casts",
+  POKEMON_DAMAGE: "Damage",
+  POKEMON_HEAL: "Heals",
+  DISPLAY_TEXT: "Text",
+  BOARD_EVENT: "Board effects"
+}
+// Drill-down sections for the merged Combat chip. The source note honors the real distinction: casts/damage
+// only exist for the board the recorder was watching, while status/stats are recovered for every board.
+const COMBAT_SECTIONS: { cat: Category; label: string }[] = [
+  { cat: "combat", label: "Casts / damage · recorder's camera" },
+  { cat: "status", label: "Status · all boards" },
+  { cat: "stats", label: "Stats · all boards" }
 ]
 
 const DEFAULT_ON: Record<Category, boolean> = {
@@ -588,6 +608,29 @@ export default function ReplayEventLog({
 
   if (!open) return null
   const toggle = (k: Category) => setEnabled((e) => ({ ...e, [k]: !e[k] }))
+  // One drill-down sub-type toggle (shared by the flat per-category list and the Combat sections). `label`
+  // may differ from the stored `sub` key (e.g. ABILITY → "Casts"); the off-set is keyed by the raw sub.
+  const renderSubchip = (cat: Category, sub: string, label: string) => {
+    const id = subId(cat, sub)
+    const on = !subOff.has(id)
+    return (
+      <button
+        key={id}
+        className={`rel-subchip${on ? " on" : ""}`}
+        title={`Toggle ${label}`}
+        onClick={() =>
+          setSubOff((s) => {
+            const n = new Set(s)
+            if (on) n.add(id)
+            else n.delete(id)
+            return n
+          })
+        }
+      >
+        {label}
+      </button>
+    )
+  }
   // Position: the user's dragged spot wins; else the layout-measured default; else the fallback dock.
   const posStyle: React.CSSProperties = pos
     ? { left: pos.x, top: pos.y }
@@ -611,9 +654,36 @@ export default function ReplayEventLog({
         <button className="rel-close" title="Close" onClick={onClose}>×</button>
       </header>
       <div className="rel-filters">
-        {/* Only categories that actually occur in this recording get a chip — same data-driven rule as the
-            drill-down sub-types, so there's no empty chip (e.g. Flavor with no emotes) to filter to nothing. */}
-        {CATEGORIES.filter((c) => subtypesByCat.has(c.key)).map((c) => {
+        {/* The merged Combat chip (casts/damage + status + stats); toggles all three together, drill-down
+            below splits them by source then type. Only shown if the recording has any combat events. */}
+        {COMBAT_CATS.some((c) => subtypesByCat.has(c)) &&
+          (() => {
+            const anyOn = COMBAT_CATS.some((c) => enabled[c])
+            return (
+              <span className="rel-chip-wrap has-caret">
+                <button
+                  className={`rel-chip rel-chip-combat${anyOn ? " on" : ""}`}
+                  title="Toggle combat — casts, damage, status, and stat changes"
+                  onClick={() => setEnabled((e) => {
+                    const v = !COMBAT_CATS.some((c) => e[c])
+                    return { ...e, combat: v, status: v, stats: v }
+                  })}
+                >
+                  Combat
+                </button>
+                <button
+                  className={`rel-caret${expanded === "combat" ? " open" : ""}`}
+                  title="Filter combat by casts / damage / status / stats"
+                  onClick={() => setExpanded((x) => (x === "combat" ? null : "combat"))}
+                >
+                  ▾
+                </button>
+              </span>
+            )
+          })()}
+        {/* The other categories — one chip each, only when the recording has events of that category (same
+            data-driven rule as the drill-down, so no empty chip filters to nothing). */}
+        {CATEGORIES.filter((c) => !COMBAT_CATS.includes(c.key) && subtypesByCat.has(c.key)).map((c) => {
           const drillable = (subtypesByCat.get(c.key)?.size ?? 0) > 1
           return (
             <span key={c.key} className={`rel-chip-wrap${drillable ? " has-caret" : ""}`}>
@@ -638,31 +708,25 @@ export default function ReplayEventLog({
         })}
       </div>
       {expanded && (
-        // Per-type drill-down for the expanded category: toggle individual sub-types (e.g. a single stat
-        // or status) without losing the rest. Data-driven from the recording; takes effect when the parent
-        // category is enabled. Sub-types are kept ON unless explicitly added to the off-set.
+        // Per-type drill-down: toggle individual sub-types without losing the rest. Data-driven from the
+        // recording; takes effect when the parent category is enabled; sub-types ON unless in the off-set.
+        // The merged Combat chip drills into three labeled sections (casts/damage · status · stats) so the
+        // different sources read clearly; every other category is a flat list of its types.
         <div className="rel-subfilters">
-          {[...(subtypesByCat.get(expanded) ?? [])].sort().map((sub) => {
-            const id = subId(expanded, sub)
-            const on = !subOff.has(id)
-            return (
-              <button
-                key={id}
-                className={`rel-subchip${on ? " on" : ""}`}
-                title={`Toggle ${sub}`}
-                onClick={() =>
-                  setSubOff((s) => {
-                    const n = new Set(s)
-                    if (on) n.add(id)
-                    else n.delete(id)
-                    return n
-                  })
-                }
-              >
-                {sub}
-              </button>
-            )
-          })}
+          {expanded === "combat"
+            ? COMBAT_SECTIONS.map((sec) => {
+                const subs = [...(subtypesByCat.get(sec.cat) ?? [])].sort()
+                if (!subs.length) return null
+                return (
+                  <Fragment key={sec.cat}>
+                    <span className="rel-subhead">{sec.label}</span>
+                    {subs.map((sub) =>
+                      renderSubchip(sec.cat, sub, sec.cat === "combat" ? COMBAT_SUBLABEL[sub] ?? prettyName(sub) : sub)
+                    )}
+                  </Fragment>
+                )
+              })
+            : [...(subtypesByCat.get(expanded) ?? [])].sort().map((sub) => renderSubchip(expanded, sub, sub))}
         </div>
       )}
       {playerOrder.length > 0 && (

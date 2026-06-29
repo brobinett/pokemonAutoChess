@@ -128,6 +128,16 @@
   overflow-y: auto;
   scrollbar-width: thin;
 }
+/* section header inside the merged Combat drill-down: full-width forces a line break → grouped sections */
+.rel-subhead {
+  flex: 1 0 100%;
+  font-size: 0.78em;
+  opacity: 0.5;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 4px 2px 0;
+}
+.rel-subhead:first-child { margin-top: 0; }
 .rel-subchip {
   font-size: 0.85em;
   line-height: 1.3;
