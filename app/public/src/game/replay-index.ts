@@ -72,10 +72,10 @@ export type ReplayEventType =
   | "round" // a fight resolved → win / loss / draw vs the opponent (player.history)
   | "synergy" // a synergy tier activated/upgraded — player.synergies crossed a SynergyTriggers threshold
   | "town" // a town encounter NPC appeared (state.townEncounter — shared, game-level)
-  | "region" // the POV took a portal to a new region (player.map changed)
+  | "region" // any player entered a new region (player.map; derived for all players, owner-tagged)
   | "artifact" // a Normal-synergy scarf was crafted (scarvesItems; Fairy wands log via `pick`)
   | "weather" // a fight started with weather (its simulation's weather, ≠ NEUTRAL) — owner-tagged, any board
-  | "berries" // the POV's berry-tree species repopulated (berryTreesType — changes on each region)
+  | "berries" // a player's berry-tree species repopulated (berryTreesType; derived for all players)
   | "rule" // a special game rule is in effect (state.specialGameRule — scribble modes; once, at start)
   | "status" // a combat status flipped on for a unit on any board, owner-tagged (burn/poison/freeze/… — entity.status)
   | "stat" // a combat stat changed for a unit on any board, owner-tagged (atk/speed/ap/hp/… — entity stat field)
@@ -292,6 +292,14 @@ function simTileOwner(
   const owner = side === "blue" ? sim.bluePlayerId : sim.redPlayerId
   return owner && state.players?.get(owner)?.simulationId === simId ? owner : undefined
 }
+
+// Casts sent with `room.broadcast` (every client) rather than `broadcastToSpectators` (only clients whose
+// camera is on that fight). The recorded camera (spectatedPlayerId) therefore does NOT identify their
+// board, so these are owner-tagged by the payload tile's own sim (simTileOwner), not the camera — else
+// opponents' team-wide casts leak onto whatever board the recorder was watching. Maintenance: a new
+// `room.broadcast(Transfer.ABILITY)` added upstream must be listed here. As of the pin: TIDAL_WAVE
+// (simulation.ts triggerTidalWave), COMET_CRASH (COMET_SHARD skydive), CURSE_EFFECT (status.ts updateCurse).
+const ROOM_BROADCAST_ABILITIES = new Set(["TIDAL_WAVE", "COMET_CRASH", "CURSE_EFFECT"])
 
 // Which player's board (bench + board) currently holds `unitId`. Used to attribute a `room.broadcast`
 // DIG / COOK (payload `pokemonId` = the digging/cooking unit) to its owner so the row shows under that
@@ -690,6 +698,10 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   const digInfo: Record<number, { x: number; y: number; depth: number }> = {} // POV digs → tile + depth
   const incomeInfo: Record<number, { base: number; interest: number; streak: number }> = {} // round income
   const foreignFrames: number[] = [] // non-POV DIG/COOK/SHOW_EMOTE message frames (room.broadcast leak)
+  // uid → in-game name, accumulated across ALL frames (not just the final state): a player who leaves before
+  // stage 6 is deleted from state.players (game-room onLeave), but their owner-tagged rows remain — keep
+  // their name so they still get a chip in the per-player filter.
+  const playerNames: Record<string, string> = {}
 
   let prevPhase: number | undefined
   let prevStage: number | undefined
@@ -726,7 +738,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       if (hasState && (f.type === "ABILITY" || f.type === "POKEMON_DAMAGE" || f.type === "POKEMON_HEAL" || f.type === "DISPLAY_TEXT")) {
         const state = ser.getState()
         const pl = f.payload as {
-          id?: string; positionX?: number; positionY?: number; targetX?: number; targetY?: number; x?: number; y?: number
+          id?: string; skill?: string; positionX?: number; positionY?: number; targetX?: number; targetY?: number; x?: number; y?: number
         }
         const owner = viewerUid
           ? (state.players?.get(viewerUid) as { spectatedPlayerId?: string } | undefined)?.spectatedPlayerId
@@ -735,7 +747,15 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           // Only the caster: the ABILITY target (targetX/Y) is the caster's attack-enemy by default, so
           // it mis-names self/ally effects — the log drops it (the real target is the damage/heal row's).
           const caster = unitAt(state, pl?.id, pl?.positionX, pl?.positionY)
-          combatUnits[i] = { caster, owner }
+          if (pl?.skill && ROOM_BROADCAST_ABILITIES.has(pl.skill)) {
+            // A room.broadcast cast: the camera doesn't own it. Tag by the payload tile's own sim, else hide
+            // (an unresolved / ghost-PvE side → foreignFrames), the same rule scanFrameCombat/BOARD_EVENT use.
+            const boardOwner = simTileOwner(state, pl?.id, pl?.positionX, pl?.positionY)
+            if (boardOwner) combatUnits[i] = { caster, owner: boardOwner }
+            else foreignFrames.push(i)
+          } else {
+            combatUnits[i] = { caster, owner }
+          }
         } else if (f.type === "DISPLAY_TEXT") {
           combatUnits[i] = { owner } // no tile to name; just carry the camera owner
         } else {
@@ -817,6 +837,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     prevRule = rule
 
     state.players?.forEach((p, uid) => {
+      if (p?.name) playerNames[uid] = p.name
       const life = p.life
       if (typeof life !== "number") return
       if (isElimination(lifePrev.get(uid), life) && !eliminated.has(uid)) {
@@ -902,13 +923,6 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       stages.push({ stage: s.stage, t: s.t })
     }
   }
-
-  // uid → in-game name, from the final reconstructed state (covers every player that appeared). Drives
-  // the per-player log column + the tab labels; names are stable, so the final-frame read is sufficient.
-  const playerNames: Record<string, string> = {}
-  ser.getState()?.players?.forEach((p, uid) => {
-    playerNames[uid] = p.name
-  })
 
   return {
     schemaVersion: REPLAY_INDEX_SCHEMA_VERSION,
