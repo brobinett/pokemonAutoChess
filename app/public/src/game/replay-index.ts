@@ -12,7 +12,7 @@ import { ItemRecipe } from "../../../types/enum/Item"
 import { Pkm, PkmDuos } from "../../../types/enum/Pokemon"
 import type { Synergy } from "../../../types/enum/Synergy"
 import type { ReplayFrame } from "./replay-room"
-import { type EntitySnap, prettyName, scanFrameCombat } from "./replay-combat-scan"
+import { type CombatFrameState, type EntitySnap, prettyName, scanFrameCombat } from "./replay-combat-scan"
 
 // prettyName lives in replay-combat-scan (so the lean foreign-combat worker can reuse it); re-export it
 // here for the existing callers (the event-log component imports it from this module).
@@ -158,10 +158,12 @@ export interface ReplayIndex {
   // uid → the player's in-game name (display name for the per-player log column / tab labels). Built
   // from the final reconstructed state, so it covers every player that appeared.
   playerNames: Record<string, string>
-  // Combat-event unit names resolved by tile, keyed by the message frame's index in manifest.frames.
-  // The ABILITY / POKEMON_DAMAGE / POKEMON_HEAL payloads identify units by (simulationId, x, y), not
-  // by id, so we look the tile up against the simulation positions decoded as of that frame.
-  combatUnits: Record<number, { caster?: string; target?: string }>
+  // Per combat-message frame (keyed by index in manifest.frames): the unit names resolved by tile
+  // (caster/target — the payloads identify units by (simulationId, x, y), looked up against the decoded
+  // sim positions) AND `owner` = the recorder's camera (spectatedPlayerId) at that frame. These messages
+  // are camera-scoped (broadcastToSpectators), so `owner` is the board the recorder was watching — the
+  // log tags the row to it, so casts captured by scouting another board show under THAT player.
+  combatUnits: Record<number, { caster?: string; target?: string; owner?: string }>
   // DIG message frames (own POV only) → the dig site resolved from POV state: the digging unit's board
   // tile (x,y) and the hole depth AFTER this dig (groundHoles[(y-1)·BOARD_WIDTH+x] + 1, capped at 5).
   // The DIG payload only carries { pokemonId, buriedItem }, so coordinate + depth come from the state.
@@ -654,7 +656,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   const segments: ReplaySegment[] = []
   const events: ReplayEvent[] = [] // eliminations only (scrubber markers + log)
   const actions: ReplayEvent[] = [] // POV reroll/buy/sell/level/pick (log only)
-  const combatUnits: Record<number, { caster?: string; target?: string }> = {}
+  const combatUnits: Record<number, { caster?: string; target?: string; owner?: string }> = {}
   const digInfo: Record<number, { x: number; y: number; depth: number }> = {} // POV digs → tile + depth
   const incomeInfo: Record<number, { base: number; interest: number; streak: number }> = {} // round income
   const foreignFrames: number[] = [] // non-POV DIG/COOK/SHOW_EMOTE message frames (room.broadcast leak)
@@ -684,21 +686,31 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
 
     if (f.kind === "message") {
       if (f.type === "LOADING_COMPLETE" && gameStartMs === null) gameStartMs = f.t
-      // Resolve combat-event units by tile against the state decoded so far (ABILITY caster + target;
-      // damage/heal target — their SOURCE comes from the message's own species `index`).
-      if (hasState && (f.type === "ABILITY" || f.type === "POKEMON_DAMAGE" || f.type === "POKEMON_HEAL")) {
+      // ABILITY / POKEMON_DAMAGE / POKEMON_HEAL / DISPLAY_TEXT are `broadcastToSpectators` — sent only to
+      // clients whose CAMERA (spectatedPlayerId) is on that fight AT THAT INSTANT. So these rows belong to
+      // whatever board the recorder was watching, NOT necessarily their own — tag them by the recorded
+      // camera (`owner`) so a fight watched by scouting shows under THAT player, not the POV. (The recorded
+      // spectatedPlayerId is set in the same handler as the server's broadcast filter, so it reconstructs
+      // exactly which board's combat was captured.) Unit NAMES still resolve against the message's own
+      // simId, so "X's Charizard" is correct regardless of the tag.
+      if (hasState && (f.type === "ABILITY" || f.type === "POKEMON_DAMAGE" || f.type === "POKEMON_HEAL" || f.type === "DISPLAY_TEXT")) {
         const state = ser.getState()
         const pl = f.payload as {
           id?: string; positionX?: number; positionY?: number; targetX?: number; targetY?: number; x?: number; y?: number
         }
+        const owner = viewerUid
+          ? (state.players?.get(viewerUid) as { spectatedPlayerId?: string } | undefined)?.spectatedPlayerId
+          : undefined
         if (f.type === "ABILITY") {
           // Only the caster: the ABILITY target (targetX/Y) is the caster's attack-enemy by default, so
           // it mis-names self/ally effects — the log drops it (the real target is the damage/heal row's).
           const caster = unitAt(state, pl?.id, pl?.positionX, pl?.positionY)
-          if (caster) combatUnits[i] = { caster }
+          combatUnits[i] = { caster, owner }
+        } else if (f.type === "DISPLAY_TEXT") {
+          combatUnits[i] = { owner } // no tile to name; just carry the camera owner
         } else {
           const target = unitAt(state, pl?.id, pl?.x, pl?.y)
-          if (target) combatUnits[i] = { target }
+          combatUnits[i] = { target, owner }
         }
       }
       // POV-scope the `room.broadcast` player events: DIG / COOK belong to the digging/cooking unit's
@@ -814,7 +826,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     // Diff every simulation's units, owner-tagged (scanFrameCombat handles the ghost/PvE exclusion). A
     // status flips false→true (poisonStacks ↑); a buff stat changes value. Combat-volume → the default-off
     // Status/Stats categories. Owner-tagged so each player's combat shows under their name in the log.
-    scanFrameCombat(state, prevBySim, f.t, actions)
+    scanFrameCombat(state as unknown as CombatFrameState, prevBySim, f.t, actions)
 
     // --- Per-player state-diff events ---
     // Board / economy / items / synergy / round / region / berry / flower / wanderer derivation, run for

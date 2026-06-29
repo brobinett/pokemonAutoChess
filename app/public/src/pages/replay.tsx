@@ -777,13 +777,15 @@ function ReplayLibrary({
             Download the ones you want to keep.
           </p>
           <p>
-            A replay is recorded from one player's point of view. That player's own game is captured in
-            full; for everyone else, boards, economy, synergies, items, round results, and eliminations are
-            reconstructed from shared game state. Two things can't be captured for other players: their{" "}
-            <strong>shop rolls</strong> and their <strong>combat cast &amp; damage</strong> detail (you
-            still see other boards' unit buffs, statuses, and field effects). In the event log,{" "}
-            <em>Recorded&nbsp;POV</em> is the perfect-information view and <em>Everyone</em> is the
-            best-effort view across all players. A disconnect during recording leaves a short gap.
+            A replay is recorded from one player's client. Every player's board, economy, synergies, items,
+            round results, eliminations, and in-combat buffs / statuses are reconstructed from shared game
+            state — so the event log's per-player chips let you follow anyone. Two things are limited by the
+            single client: <strong>shop rolls</strong> are only known for the recording player (everyone
+            else's shop is hidden), and <strong>ability casts &amp; damage numbers</strong> follow the
+            recorder's <strong>camera</strong> — they're captured only for the board being watched at that
+            moment. So if you scout another board mid-fight you get that board's casts and miss your own;
+            those rows appear under whichever board was being watched, not always the recording player. A
+            disconnect during recording leaves a short gap.
           </p>
         </div>
       </div>

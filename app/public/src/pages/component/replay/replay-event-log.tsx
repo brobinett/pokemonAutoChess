@@ -140,8 +140,9 @@ type LogEvent = {
   kind: "msg" | "phase" | "elim" | "action" | "pick"
   // The player this event belongs to — the per-player filter slices on it. Owner-tagged: a player's
   // board/economy/combat-status/stats all carry their uid; uid-less rows are game-level milestones (phase
-  // / elim / town / rule) and always show. Combat MESSAGES (cast/damage/heal) are the recorder's own fight
-  // (broadcastToSpectators), so they carry the viewer uid — the single-POV gap (only the POV has them).
+  // / elim / town / rule) and always show. Combat MESSAGES (cast/damage/heal/text) are camera-scoped
+  // (broadcastToSpectators), so they carry the WATCHED board's uid at that frame (the recorder's camera) —
+  // captured only for boards the camera visited (the single-POV gap), under whichever board was watched.
   uid?: string
   // Optional sub-type for the fine-grained filter (the stat field / status name); absent → the `type`
   // column IS the filterable granularity. `subKey()` below resolves the effective key either way.
@@ -169,6 +170,7 @@ const DMG_TYPE = ["physical", "special", "true"]
 type FrameInfo = {
   caster?: string
   target?: string
+  owner?: string // the recorder's camera (spectatedPlayerId) for a camera-scoped combat row; summarize ignores it
   dig?: { x: number; y: number; depth: number }
   income?: { base: number; interest: number; streak: number }
 }
@@ -425,15 +427,16 @@ export default function ReplayEventLog({
   const events = useMemo<LogEvent[]>(() => {
     const out: LogEvent[] = []
     // DIG / COOK / SHOW_EMOTE are room-broadcast to every client, so the POV capture holds other players'
-    // too; the index flags the non-POV ones (by the owning unit / emote uid) — hide them. (Combat is
-    // spectator-scoped to the POV's own fight, so message frames carry the viewer uid; GAME_END/LOADING
-    // are game-level but stay attributed to the POV stream — they don't surface a foreign player.)
+    // too; the index flags the non-POV ones (by the owning unit / emote uid) — hide them. Combat messages
+    // (cast/damage/heal/text) are camera-scoped (broadcastToSpectators), so the index tags them with the
+    // recorder's camera at that frame (`combatUnits[i].owner` = the watched board) — a fight watched by
+    // scouting shows under THAT player, not the POV. Non-combat messages have no owner → the viewer uid.
     const foreign = new Set(index?.foreignFrames ?? [])
     room.manifest.frames.forEach((f, i) => {
       if (f.kind === "message" && !foreign.has(i)) {
         const type = String(f.type)
         const info: FrameInfo = { ...index?.combatUnits?.[i], dig: index?.digInfo?.[i], income: index?.incomeInfo?.[i] }
-        out.push({ t: f.t, frame: i, type, summary: summarize(type, f.payload, info), cat: CATEGORY_OF[type] ?? "engine", kind: "msg", uid: viewerUid })
+        out.push({ t: f.t, frame: i, type, summary: summarize(type, f.payload, info), cat: CATEGORY_OF[type] ?? "engine", kind: "msg", uid: info.owner ?? viewerUid })
       }
     })
     // Game-level milestones (phase / elimination) carry no uid → they always show.

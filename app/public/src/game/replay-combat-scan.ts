@@ -63,6 +63,11 @@ export interface CombatScanEvent {
   key: string
 }
 
+// A push-only sink for the scan output. Typed as a sink (not CombatScanEvent[]) so callers can collect
+// straight into a wider ReplayEvent[] — a CombatScanEvent IS a ReplayEvent, and the contravariant push
+// makes the wider array assignable, no cast needed at the call site.
+type CombatSink = { push: (e: CombatScanEvent) => void }
+
 // Diff one combat entity vs its previous snapshot; push the status flips (false→true / poison ↑) and
 // stat changes (tagged `ownerUid`) into `out`, and return the new snapshot for the caller to store.
 // `name` is the already-prettified unit name. Logic is identical to the original inline POV scan.
@@ -72,7 +77,7 @@ export function scanCombatEntity(
   t: number,
   name: string,
   ownerUid: string | undefined,
-  out: CombatScanEvent[]
+  out: CombatSink
 ): EntitySnap {
   const st = e.status as Record<string, unknown> | undefined
   const statusSnap: Record<string, unknown> = {}
@@ -129,7 +134,7 @@ export function scanFrameCombat(
   state: CombatFrameState,
   prevBySim: Map<string, Map<string, EntitySnap>>,
   t: number,
-  out: CombatScanEvent[]
+  out: CombatSink
 ): void {
   const players = state.players
   state.simulations?.forEach?.((sim, simId) => {
