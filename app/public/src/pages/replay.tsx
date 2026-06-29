@@ -99,9 +99,10 @@ export default function Replay() {
   const [seekEpoch, setSeekEpoch] = useState(0) // bumps per (re)boot to (re)run the wait-for-scene → startPlayback effect
   const [eventLogOpen, setEventLogOpen] = useState(false) // owned here so its toggle can live in the control bar
   const initialized = useRef(false)
+  const aliveRef = useRef(true) // false once the route unmounts; guards the deferred index build (see loadManifest)
   const replayRoom = useRef<ReplayRoom | null>(null)
   const manifestRef = useRef<ReplayManifest | null>(null)
-  const indexRef = useRef<ReplayIndex | null>(null) // phase/stage/event index — built synchronously per manifest
+  const indexRef = useRef<ReplayIndex | null>(null) // phase/stage/event index — built per manifest, deferred one paint
   const bootPausedRef = useRef(false)
   // The spectated board at the moment a seek begins. A re-attach restarts the scene, which builds a
   // brand-new BoardManager; we wait for `board !== prevBoard` so we don't latch onto the outgoing scene.
@@ -155,6 +156,7 @@ export default function Replay() {
   // ReplayRoom from rooms.game. Without this, replay state leaks into the next real match.
   useEffect(
     () => () => {
+      aliveRef.current = false // stop a deferred index build (loadManifest) from booting into this torn-down page
       // Restore the real uid. Prefer the captured Redux identity (keeps the real displayName); fall back
       // to firebase.auth().currentUser — the replay only ever overwrites the Redux uid, never firebase —
       // so the restore can't be defeated even if the early capture missed a not-yet-resolved auth.
@@ -281,19 +283,34 @@ export default function Replay() {
     // degradation is explained up front rather than leaving it mysterious. (Rendered in the load overlays.)
     setBuildSkew(buildSkewMessage(manifest.game, RUNNING_BUILD))
     // Build the index (phase/stage boundaries + eliminations + per-player event log) for the skip controls,
-    // timeline markers, and event log. Synchronous on purpose: it runs while the CSS-animated "Loading
-    // replay" spinner is up (pick() / the served-file path switch to it first), and boot() reveals the
-    // controls + log together once it's done — no progressive pop-in. Enhancement-only, so a decode hiccup
-    // must not block playback: swallow errors. (The combat status/stat scan dominates the cost on a long
-    // capture; if that ever needs to come off the critical path, derive it lazily when Status/Stats is
-    // enabled rather than eagerly — that keeps the common build fast without a worker. See BACKLOG.)
-    try {
-      indexRef.current = buildReplayIndex(manifest.frames, manifest.viewerUid)
-    } catch (e) {
-      console.error("[replay] failed to build index", e)
-      indexRef.current = null
+    // timeline markers, and event log, then boot. boot() reveals the controls + log together once the index
+    // is ready — no progressive pop-in. The build is a synchronous pass (the combat status/stat scan
+    // dominates; ~5s on a long capture), so DEFER it past a paint (double rAF): otherwise it blocks the main
+    // thread with the loading card frozen on its pre-notice layout, and the skew notice only appears when
+    // boot() swaps in the post-build overlay — resizing the card mid-load. Yielding a frame first lets the
+    // overlay paint WITH the notice, so the card keeps one shape through the whole load. aliveRef guards the
+    // one-frame window: a route-exit before the build must not boot into a torn-down page (it would re-pollute
+    // the just-restored session — see the teardown effect). Enhancement-only, so a decode hiccup must not
+    // block playback: swallow errors. (If the scan ever needs to leave the critical path, derive it lazily
+    // when Status/Stats is enabled rather than eagerly — keeps the common build fast without a worker. See BACKLOG.)
+    const buildAndBoot = () => {
+      if (!aliveRef.current) return
+      try {
+        indexRef.current = buildReplayIndex(manifest.frames, manifest.viewerUid)
+      } catch (e) {
+        console.error("[replay] failed to build index", e)
+        indexRef.current = null
+      }
+      // boot() ran synchronously inside loadManifest before, so a throw (e.g. a corrupt handshake) reached
+      // the load path's .catch → the error screen. Now it's in a rAF, off the promise chain, so surface it
+      // here to preserve that — otherwise a fatal boot would hang on the loading overlay forever.
+      try {
+        boot(startMs, false)
+      } catch (e) {
+        setError(String((e as Error)?.message ?? e))
+      }
     }
-    boot(startMs, false)
+    requestAnimationFrame(() => requestAnimationFrame(buildAndBoot))
   }
 
   // Controls callbacks: every seek (either direction) and restart reboots at the target — see boot().
