@@ -1,5 +1,8 @@
 import { matchMaker } from "colyseus"
 import { CronJob } from "cron"
+import dayjs from "dayjs"
+import admin from "firebase-admin"
+import type { UserRecord } from "firebase-admin/lib/auth/user-record"
 import {
   CRON_ELO_DECAY_DELAY,
   CRON_ELO_DECAY_MINIMUM_ELO,
@@ -81,11 +84,50 @@ export function initCronJobs() {
 }
 
 async function deleteOldAnonymousAccounts() {
-  // No-op under the dev-auth shim — anonymous account lifecycle isn't tracked
-  // when token == uid. Kept as a stub so the call site type-checks if re-enabled.
+  logger.info("[CRON] Deleting old anonymous accounts...")
+  const currentDate = dayjs() // Get the current date and time
+  const oneMonthLimit = currentDate.subtract(1, "month")
+  const anonymousAccounts = new Array<UserRecord>()
+  await listAllUsers()
+
+  async function listAllUsers(nextPageToken?: string) {
+    // List batch of users, 1000 at a time.
+    const listUsersResult = await admin.auth().listUsers(1000, nextPageToken)
+    //logger.debug(nextPageToken)
+    listUsersResult.users.forEach((userRecord) => {
+      const lastSignInDate = dayjs(userRecord.metadata.lastSignInTime)
+      if (
+        userRecord.email === undefined &&
+        userRecord.photoURL === undefined &&
+        userRecord.metadata.lastSignInTime &&
+        lastSignInDate.isBefore(oneMonthLimit)
+      ) {
+        anonymousAccounts.push(userRecord)
+      }
+    })
+    if (listUsersResult.pageToken) {
+      // List next batch of users.
+      await listAllUsers(listUsersResult.pageToken)
+    }
+  }
+
   logger.info(
-    "[CRON] deleteOldAnonymousAccounts is a no-op under dev-auth shim."
+    `deleting ${anonymousAccounts.length} inactive anonymous accounts`
   )
+
+  while (anonymousAccounts.length > 0) {
+    const batchDeletion = new Array<string>()
+    for (let i = 0; i < 999; i++) {
+      const account = anonymousAccounts.pop()
+      account && batchDeletion.push(account.uid)
+    }
+    const firebaseDeletion = await admin.auth().deleteUsers(batchDeletion)
+    logger.info("firebase deletion result ", firebaseDeletion)
+    const pacDeletion = await UserMetadata.deleteMany({
+      uid: { $in: batchDeletion }
+    })
+    logger.info("pac deletion result ", pacDeletion)
+  }
 }
 
 async function eloDecay() {

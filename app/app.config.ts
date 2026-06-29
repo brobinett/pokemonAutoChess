@@ -23,8 +23,6 @@ import {
   SynergyTriggers,
   USERNAME_REGEXP
 } from "./config"
-import { installDevAuthShim } from "./dev-auth"
-installDevAuthShim()
 import { migrateShardsOfAltForms } from "./core/collection"
 import { initTilemap } from "./core/design"
 import { GameRecord } from "./models/colyseus-models/game-record"
@@ -1120,6 +1118,12 @@ export const server = defineServer({
     connect(process.env.MONGO_URI!, {
       socketTimeoutMS: 45000
     })
-    // Firebase admin init skipped — see installDevAuthShim() at top of file.
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID!,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, "\n")
+      })
+    })
   }
 })
