@@ -248,8 +248,12 @@ export function encodeFrameV1(frame: ReplayFrame, prevT: number | null): { bytes
   return { bytes: w.done(), t }
 }
 
-// Shared per-frame writer — both encodeReplayV1 and the streaming encodeFrameV1 use it, so the one-shot
-// and incremental paths are byte-identical by construction (proven in replay/verify-stream-encode.mjs).
+// Shared per-frame writer — both encodeReplayV1 and the streaming encodeFrameV1 use it. The one-shot and
+// incremental paths are byte-identical for a REBASED manifest (frames[0].t === 0); on Date.now-stamped
+// frames they differ in the first frame's tDelta alone (one-shot opens prevT=0 → absolute varint, the
+// streaming writer opens prevT=null → 0). Moot in production: the streaming encodeFrameV1 is the sole app
+// writer (encodeReplayV1 has no caller in app/), so the two never encode the same frames. Parity on rebased
+// input is checked in replay/verify-stream-encode.mjs.
 function writeFrame(w: ByteWriter, f: ReplayFrame, prevT: number): number {
   if (!(f.kind in KIND)) throw new Error(`encodeReplayV1: unknown frame kind "${f.kind}"`)
   const kind = KIND[f.kind]
@@ -292,6 +296,9 @@ function writeFrame(w: ByteWriter, f: ReplayFrame, prevT: number): number {
     }
   } else {
     w.varint(f.offset ?? 1)
+    // A state frame always carries bytes (or v0 b64) in practice; the empty fallback is a defensive
+    // no-throw. (The .mjs twin's stateFrameBytes throws here instead — a benign divergence on an
+    // unreachable input, gone once v0 is stripped for the PR.)
     const b = f.bytes ?? (f.b64 ? b64ToBytes(f.b64) : new Uint8Array(0))
     w.varint(b.length)
     w.bytes(b)
@@ -357,6 +364,12 @@ export function decodeReplayV1(bytes: Uint8Array): ReplayManifest {
 }
 
 // ── dual-read: sniff v1-binary vs v0-JSON, return a manifest the consumers (which dual-read frames) use ─
+// v0 contract (intentionally divergent from the replay/replay-format.mjs twin, which EAGER-normalizes via
+// normalizeV0): here the v0 branch returns the raw JSON.parse unchanged — frames keep their `b64`/`{__bytes__}`
+// — because every TS consumer dual-reads (`f.bytes ?? b64ToBytes(f.b64)` in writeFrame; messagePayload for
+// payloads). The .mjs twin's consumer (reconstruct.mjs) reads bare `f.bytes`, so it normalizes up front. Each
+// side matches its own consumer; the v1 binary layout stays lockstep. The divergence disappears when v0 is
+// stripped for the upstream PR (v0 is our dev-only base64-in-JSON fixtures; upstream never had it).
 export function loadReplay(input: ArrayBuffer | Uint8Array | string): ReplayManifest {
   if (typeof input === "string") return JSON.parse(input) as ReplayManifest
   const u8 = input instanceof Uint8Array ? input : new Uint8Array(input)

@@ -740,9 +740,17 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         const pl = f.payload as {
           id?: string; skill?: string; positionX?: number; positionY?: number; targetX?: number; targetY?: number; x?: number; y?: number
         }
-        const owner = viewerUid
-          ? (state.players?.get(viewerUid) as { spectatedPlayerId?: string } | undefined)?.spectatedPlayerId
+        const pov = viewerUid
+          ? (state.players?.get(viewerUid) as { spectatedPlayerId?: string; alive?: boolean; hasLeftGame?: boolean } | undefined)
           : undefined
+        const owner = pov?.spectatedPlayerId
+        // Death/leave force `spectatedPlayerId` back to self (checkDeath / the onLeave handler) WITHOUT
+        // resetting the server's broadcast filter (client.userData), which keeps pointing at the last
+        // board the POV scouted. So a dead/left POV still receives THAT board's combat while the schema
+        // reads self — tagging by `owner` would mis-file a scouted fight onto the POV (who has no fight of
+        // their own). userData isn't in the transcript, so we can't recover which board it was → drop these
+        // camera-scoped rows as foreign. A dead POV who re-spectates sets spectatedPlayerId ≠ self → kept.
+        const cameraSelfForced = owner === viewerUid && (pov?.alive === false || pov?.hasLeftGame === true)
         if (f.type === "ABILITY") {
           // Only the caster: the ABILITY target (targetX/Y) is the caster's attack-enemy by default, so
           // it mis-names self/ally effects — the log drops it (the real target is the damage/heal row's).
@@ -753,9 +761,13 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
             const boardOwner = simTileOwner(state, pl?.id, pl?.positionX, pl?.positionY)
             if (boardOwner) combatUnits[i] = { caster, owner: boardOwner }
             else foreignFrames.push(i)
+          } else if (cameraSelfForced) {
+            foreignFrames.push(i)
           } else {
             combatUnits[i] = { caster, owner }
           }
+        } else if (cameraSelfForced) {
+          foreignFrames.push(i)
         } else if (f.type === "DISPLAY_TEXT") {
           combatUnits[i] = { owner } // no tile to name; just carry the camera owner
         } else {

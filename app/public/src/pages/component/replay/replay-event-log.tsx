@@ -200,6 +200,19 @@ const ACTION_CAT: Record<string, Category> = {
 const FILTER_KEY = "replay.eventlog.filters"
 const BOX_KEY = "replay.eventlog.box" // { x, y, w, h }
 
+type SavedBox = { x?: number; y?: number; w?: number; h?: number }
+// Read the persisted drag/size box fresh from localStorage. The size effect re-reads it (rather than a
+// mount-time memo) so an in-session resize wins over the layout-measured default on the next reflow.
+function readBox(): SavedBox {
+  try {
+    const b = JSON.parse(localStorage.getItem(BOX_KEY) || "null")
+    if (b && typeof b === "object") return b as SavedBox
+  } catch {
+    /* ignore */
+  }
+  return {}
+}
+
 type LogEvent = {
   t: number // ms since first frame (absolute on the transcript clock)
   frame: number // frame index in the manifest (-1 for derived phase/elim events)
@@ -395,15 +408,7 @@ export default function ReplayEventLog({
   // restore the saved box (drag position {x,y} + size {w,h}). Position drives the panel only once it's
   // been dragged; until then the default dock (via posStyle) applies. Size is applied imperatively so
   // the CSS resize handle stays the source of truth.
-  const saved = useMemo(() => {
-    try {
-      const b = JSON.parse(localStorage.getItem(BOX_KEY) || "null")
-      if (b && typeof b === "object") return b as { x?: number; y?: number; w?: number; h?: number }
-    } catch {
-      /* ignore */
-    }
-    return {} as { x?: number; y?: number; w?: number; h?: number }
-  }, [])
+  const saved = useMemo<SavedBox>(() => readBox(), [])
   const [pos, setPos] = useState<{ x: number; y: number } | null>(
     saved.x != null && saved.y != null ? { x: saved.x, y: saved.y } : null
   )
@@ -510,11 +515,15 @@ export default function ReplayEventLog({
     if (!open) return
     const el = panelRef.current
     if (!el) return
+    // Re-read the box FRESH (not the mount-time `saved` memo): once the user resizes, the observer below
+    // persists w/h, so a later window-resize re-run must apply THAT, not the layout-measured default —
+    // otherwise autoBox would clobber the user's size and the observer would persist the default back.
+    const box = readBox()
     // The user's saved size wins; otherwise apply the layout-measured default (so the panel fills the
     // right column). Width/height are set imperatively to keep the CSS resize handle the source of truth.
-    if (saved.w) el.style.width = `${saved.w}px`
+    if (box.w) el.style.width = `${box.w}px`
     else if (autoBox) el.style.width = `${autoBox.width}px`
-    if (saved.h) el.style.height = `${saved.h}px`
+    if (box.h) el.style.height = `${box.h}px`
     else if (autoBox) el.style.height = `${autoBox.height}px`
     const ro = new ResizeObserver(() => {
       // keep the virtualization viewport in sync with the live panel height, or a resize leaves the new
@@ -530,7 +539,7 @@ export default function ReplayEventLog({
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [open, saved, autoBox])
+  }, [open, autoBox])
 
   const playerNames = index?.playerNames ?? {}
 
@@ -561,15 +570,19 @@ export default function ReplayEventLog({
     return out.sort((a, b) => a.t - b.t || a.frame - b.frame)
   }, [room, index, viewerUid])
 
-  // Sub-types present per category (data-driven from the recording) → drives the per-category drill-down.
+  // Sub-types present per category, projected through the per-player filter → drives the category chips
+  // AND the per-category drill-down. Counting only rows visible under the current `playerOn` selection
+  // (uid-less game-level rows always count) keeps a chip from showing when every row in that category
+  // belongs to an unselected player (e.g. POV-only combat casts while a non-POV player is selected).
   const subtypesByCat = useMemo(() => {
     const m = new Map<Category, Set<string>>()
     for (const e of events) {
+      if (!(e.uid == null || playerOn.has(e.uid))) continue
       if (!m.has(e.cat)) m.set(e.cat, new Set())
       m.get(e.cat)!.add(subKey(e))
     }
     return m
-  }, [events])
+  }, [events, playerOn])
 
   // Player chip order for the per-player filter: the recording player first, then the rest alphabetically
   // by name. Built from the index's roster (every player that appeared, incl. eliminated).
