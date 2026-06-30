@@ -3,6 +3,7 @@ import type { User } from "@firebase/auth-types"
 import firebase from "firebase/compat/app"
 import { useEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
+import { useTranslation } from "react-i18next"
 import pkg from "../../../../package.json"
 import type GameState from "../../../rooms/states/game-state"
 import { GamePhaseState } from "../../../types/enum/Game"
@@ -21,7 +22,7 @@ import {
   loadStoredReplay,
   type ReplayFileInfo
 } from "../game/recorder"
-import { buildSkewMessage, loadReplay } from "../game/replay-format"
+import { detectBuildSkew, loadReplay } from "../game/replay-format"
 import { ReplayRoom, type ReplayManifest } from "../game/replay-room"
 import { useAppDispatch, useAppSelector } from "../hooks"
 import { rooms } from "../network"
@@ -88,6 +89,7 @@ function installReadonlyGuard(): () => void {
 // boots. So we reveal the UI (ReplayRoom emits LOADING_COMPLETE → scene boots), wait for
 // `gameScene.board`, then play.
 export default function Replay() {
+  const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const [ready, setReady] = useState(false)
   const [needFile, setNeedFile] = useState(false)
@@ -291,8 +293,9 @@ export default function Replay() {
     // frame (the rAF callback is pre-paint, the setTimeout it schedules is post-paint — a plain double-rAF
     // does NOT work, both rAF callbacks run before paint). So the card carries the notice from the first
     // frame of the load and keeps one shape throughout.
+    const skew = detectBuildSkew(manifest.game, RUNNING_BUILD)
     flushSync(() =>
-      setBuildSkew(buildSkewMessage(manifest.game, RUNNING_BUILD))
+      setBuildSkew(skew ? t(`replay.skew.${skew.kind}`, { ...skew }) : null)
     )
     // Build the index (phase/stage boundaries + eliminations + per-player event log) for the skip controls,
     // timeline markers, and event log, then boot — which reveals the controls + log together once the index
@@ -342,13 +345,14 @@ export default function Replay() {
     seekTo(prevT)
   }
 
-  const SPEEDS = [0.5, 1, 2, 4]
+  const SPEEDS = [0.125, 0.25, 0.5, 1, 2, 4] // keep in sync with replay-controls.tsx's dropdown
   const cycleSpeed = (dir: number) => {
     const room = replayRoom.current
     if (!room) return
     const i = SPEEDS.indexOf(room.getSpeed())
     room.setSpeed(
-      SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, (i < 0 ? 1 : i) + dir))]
+      // off-list speed → step from 1× (indexOf, so it stays correct if SPEEDS is reordered)
+      SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, (i < 0 ? SPEEDS.indexOf(1) : i) + dir))]
     )
   }
 
@@ -510,7 +514,7 @@ export default function Replay() {
     return (
       <div className="replay-overlay">
         <div className="my-container replay-overlay-card">
-          <div className="replay-overlay-title">Replay error</div>
+          <div className="replay-overlay-title">{t("replay.error_title")}</div>
           <div className="replay-overlay-sub">{error}</div>
         </div>
       </div>
@@ -531,8 +535,8 @@ export default function Replay() {
       <div className="replay-overlay">
         <div className="my-container replay-overlay-card">
           <div className="replay-spinner" />
-          <div className="replay-overlay-title">Loading replay…</div>
-          <div className="replay-overlay-sub">preparing the match</div>
+          <div className="replay-overlay-title">{t("replay.loading")}</div>
+          <div className="replay-overlay-sub">{t("replay.loading_sub")}</div>
           {buildSkew && (
             <div className="replay-overlay-skew">⚠ {buildSkew}</div>
           )}
@@ -558,10 +562,10 @@ export default function Replay() {
           <div className="my-container replay-overlay-card">
             <div className="replay-spinner" />
             <div className="replay-overlay-title">
-              {seeking ? "Seeking…" : "Loading replay…"}
+              {seeking ? t("replay.seeking") : t("replay.loading")}
             </div>
             <div className="replay-overlay-sub">
-              {seeking ? "rebuilding the scene" : "preparing the match"}
+              {seeking ? t("replay.seeking_sub") : t("replay.loading_sub")}
             </div>
             {/* On the initial load only (not seeks — it'd nag on every scrub): warn when the recording's
                 build differs from this client's. Shown here, during the multi-second load the user is
@@ -649,6 +653,7 @@ function ReplayLibrary({
   onManifest: (m: ReplayManifest) => void
   onError: (msg: string) => void
 }) {
+  const { t } = useTranslation()
   const [files, setFiles] = useState<ReplayFileInfo[] | null>(null) // null = still listing
   const [busy, setBusy] = useState(false) // a watch/download is in flight — disable row actions
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null) // roomId pending inline confirm
@@ -703,13 +708,13 @@ function ReplayLibrary({
           if (f) watchFile(f)
         }}
       >
-        <div className="replay-overlay-title">Watch a replay</div>
+        <div className="replay-overlay-title">{t("replay.library.title")}</div>
 
         <div className="replay-library">
           <div className="replay-library-head">
-            <span className="replay-library-label">Saved in this browser</span>
+            <span className="replay-library-label">{t("replay.library.saved_here")}</span>
             <label className="replay-keep">
-              Keep&nbsp;
+              {t("replay.library.keep_before")}&nbsp;
               <select
                 value={keep}
                 onChange={(e) => setKeep(Number(e.target.value))}
@@ -720,18 +725,18 @@ function ReplayLibrary({
                   </option>
                 ))}
               </select>
-              &nbsp;most recent
+              &nbsp;{t("replay.library.keep_after")}
             </label>
           </div>
 
           {files === null ? (
-            <div className="replay-library-empty">Loading saved replays…</div>
+            <div className="replay-library-empty">{t("replay.library.loading")}</div>
           ) : files.length === 0 ? (
             <div className="replay-library-empty">
-              No replays are saved in this browser yet.{" "}
+              {t("replay.library.empty")}{" "}
               {recording
-                ? "They'll appear here after you finish a game."
-                : "Recording is currently off — turn it on in Options."}
+                ? t("replay.library.empty_on")
+                : t("replay.library.empty_off")}
             </div>
           ) : (
             <ul className="replay-library-list">
@@ -742,30 +747,30 @@ function ReplayLibrary({
                     <span className="replay-row-meta">
                       {formatSize(f.bytes)}
                       {f.game ? ` · ${f.game.version}` : ""}
-                      {f.game && buildSkewMessage(f.game, RUNNING_BUILD) ? (
+                      {f.game && detectBuildSkew(f.game, RUNNING_BUILD) ? (
                         <span
                           className="replay-row-skew"
-                          title="Recorded on a different game build — playback may be incomplete"
+                          title={t("replay.library.other_build_tip")}
                         >
-                          other build
+                          {t("replay.library.other_build")}
                         </span>
                       ) : null}
                     </span>
                   </div>
                   {confirmDelete === f.roomId ? (
                     <div className="replay-row-actions">
-                      <span className="replay-confirm-q">Delete?</span>
+                      <span className="replay-confirm-q">{t("replay.library.delete_q")}</span>
                       <button
                         className="bubbly red replay-row-btn"
                         onClick={() => remove(f.roomId)}
                       >
-                        Yes
+                        {t("yes")}
                       </button>
                       <button
                         className="bubbly replay-row-btn"
                         onClick={() => setConfirmDelete(null)}
                       >
-                        No
+                        {t("no")}
                       </button>
                     </div>
                   ) : (
@@ -775,19 +780,19 @@ function ReplayLibrary({
                         disabled={busy}
                         onClick={() => watchStored(f.roomId)}
                       >
-                        ▶ Watch
+                        ▶ {t("replay.library.watch")}
                       </button>
                       <button
                         className="bubbly replay-row-btn"
                         disabled={busy}
-                        title="Download to your computer"
+                        title={t("replay.library.download_tip")}
                         onClick={() => download(f)}
                       >
                         ⬇
                       </button>
                       <button
                         className="bubbly replay-row-btn"
-                        title="Delete from this browser"
+                        title={t("delete")}
                         onClick={() => setConfirmDelete(f.roomId)}
                       >
                         🗑
@@ -798,18 +803,16 @@ function ReplayLibrary({
               ))}
             </ul>
           )}
-          <p className="replay-keep-hint">
-            Older replays are removed automatically when you start a new game. Download any you want to keep
-            — a downloaded file is permanent and shareable.
-          </p>
+          <p className="replay-keep-hint">{t("replay.library.prune_hint")}</p>
         </div>
 
         <div className={`replay-dropzone${over ? " over" : ""}`}>
           <div className="replay-overlay-sub">
-            Or open a <code>.colreplay</code> file from your computer:
+            {t("replay.library.dropzone_pre")} <code>.colreplay</code>{" "}
+            {t("replay.library.dropzone_post")}
           </div>
           <label className="bubbly blue replay-file-label">
-            Choose a file
+            {t("replay.library.choose_file")}
             <input
               type="file"
               accept=".json,.colreplay,application/json"
@@ -821,51 +824,19 @@ function ReplayLibrary({
           </label>
         </div>
 
+        {/* Inline emphasis is flattened into the translation values (one key per paragraph / list item):
+            PAC has no <Trans> in app UI (it splits at element boundaries instead), so a single key per
+            block keeps the blurb fully translatable rather than fragmenting each sentence. */}
         <div className="replay-limitations">
-          <div className="replay-limitations-title">About replays</div>
-          <p>
-            Replays are saved <strong>in this browser, on this device only</strong> — they aren't
-            cloud-saved, backed up, or shared across devices or browsers. Clearing your browser's site data
-            deletes them, and replays recorded in a private / incognito window disappear when you close it.
-            Download the ones you want to keep.
-          </p>
-          <p>
-            A replay is recorded from one player's client, so the event log rebuilds most of the match for{" "}
-            <em>every</em> player from shared game state — use the per-player chips to follow anyone. A few
-            things are only knowable for the recording player.
-          </p>
-          <div className="replay-limitations-sub">Reconstructed for all players</div>
+          <div className="replay-limitations-title">{t("replay.about.title")}</div>
+          <p>{t("replay.about.privacy")}</p>
+          <p>{t("replay.about.reconstructed")}</p>
           <ul>
-            <li>
-              boards, unit moves, evolutions, items, synergies, levels, gold &amp; life, round results,
-              and eliminations
-            </li>
-            <li>
-              in-combat <strong>status effects</strong>, <strong>stat changes</strong>,{" "}
-              <strong>board effects</strong>, and each fight's <strong>weather</strong> — for every board
-            </li>
-            <li>
-              <strong>digs</strong>, <strong>cooks</strong>, and <strong>emotes</strong> — shown under the
-              player who did them
-            </li>
+            <li>{t("replay.about.pov_shop")}</li>
+            <li>{t("replay.about.pov_combat")}</li>
+            <li>{t("replay.about.pov_income")}</li>
           </ul>
-          <div className="replay-limitations-sub">Only the recording player</div>
-          <ul>
-            <li>
-              <strong>Shop</strong> — rerolls, buys, and shop removals. Everyone else's shop is hidden, so an
-              opponent buying a unit just reads as "gained."
-            </li>
-            <li>
-              <strong>Combat casts &amp; damage</strong> — ability casts and damage / heal numbers follow the
-              recorder's camera (captured only for the board being watched), so scouting another board
-              mid-fight gets you its casts but misses your own.
-            </li>
-            <li>
-              <strong>Income breakdown</strong> — the per-round income split (base / interest / streak) is
-              sent only to the recording player.
-            </li>
-          </ul>
-          <p>A disconnect during recording leaves a short gap.</p>
+          <p>{t("replay.about.gap")}</p>
         </div>
       </div>
     </div>

@@ -60,7 +60,7 @@ export function resetActiveGameRoom() {
 }
 
 // The game build a recording was made in, stamped into every file's header so the viewer can warn on a
-// build mismatch (see buildSkewMessage / the load-time skew banner). Sourced at build time from
+// build mismatch (see detectBuildSkew / the load-time skew banner). Sourced at build time from
 // package.json — the same import the rest of the client uses for its version (auth.tsx, loading-manager,
 // pokemon.ts). `version` is the human-readable patch ("6.10.1"); `assetsVersion` is the finer, dated
 // build discriminator that changes between deploys even when `version` doesn't (it rides the live JS

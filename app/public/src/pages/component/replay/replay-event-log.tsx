@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { PkmByIndex } from "../../../../../types/enum/Pokemon"
 import { prettyName, type ReplayIndex } from "../../../game/replay-index"
 import type { ReplayRoom } from "../../../game/replay-room"
@@ -96,42 +97,64 @@ const CATEGORY_OF: Record<string, Category> = {
   RECONNECT_PROMPT: "engine"
 }
 
-// Display order + labels for the filter chips. Blake owns the final copy/visual pass.
-const CATEGORIES: { key: Category; label: string }[] = [
-  { key: "combat", label: "Combat" },
-  { key: "status", label: "Status" },
-  { key: "stats", label: "Stats" },
-  { key: "economy", label: "Economy" },
-  { key: "items", label: "Items" },
-  { key: "flow", label: "Match flow" },
-  { key: "synergy", label: "Synergy" },
-  { key: "flavor", label: "Flavor" },
-  { key: "positioning", label: "Positioning" },
-  { key: "engine", label: "Engine" }
+// Display order for the filter chips; the visible label is t(`replay.eventlog.cat.<key>`) at render.
+const CAT_ORDER: Category[] = [
+  "combat",
+  "status",
+  "stats",
+  "economy",
+  "items",
+  "flow",
+  "synergy",
+  "flavor",
+  "positioning",
+  "engine"
 ]
+
+// Chip label → i18n key. Four categories reuse existing game strings instead of replay.* duplicates;
+// status/stats are folded into the Combat chip so only items/synergy actually render here, but mapping all
+// four lets us drop the replay.eventlog.cat.{status,stats,items,synergy} keys. "Synergies" is the only
+// existing key (no singular "Synergy").
+const CAT_LABEL_KEY = {
+  combat: "replay.eventlog.cat.combat",
+  status: "status_label",
+  stats: "stats",
+  economy: "replay.eventlog.cat.economy",
+  items: "wiki.nav.items_label",
+  flow: "replay.eventlog.cat.flow",
+  synergy: "synergies",
+  flavor: "replay.eventlog.cat.flavor",
+  positioning: "replay.eventlog.cat.positioning",
+  engine: "replay.eventlog.cat.engine"
+} as const satisfies Record<Category, string>
 
 // The combat-family categories share one "Combat" chip — they're all combat, just from different sources
 // (casts/damage are camera-scoped messages; status/stats are all-boards state). The chip toggles the three
 // together; its drill-down breaks them out by source (the section labels below) and then by type.
 const COMBAT_CATS: Category[] = ["combat", "status", "stats"]
-// Combat message types → readable group labels for the drill-down (status/stats already have readable keys).
-const COMBAT_SUBLABEL: Record<string, string> = {
-  ABILITY: "Casts",
-  POKEMON_DAMAGE: "Damage",
-  POKEMON_HEAL: "Heals",
-  DISPLAY_TEXT: "Text",
-  BOARD_EVENT: "Board effects",
-  WEATHER: "Weather"
+// Combat message types → t() sub-keys for the drill-down chip labels (resolved as
+// t(`replay.eventlog.sub.<key>`); types not listed here fall back to prettyName(type)). The value is a
+// literal union (not `string`) so the template-literal key stays a known i18n key for the typed `t`.
+type CombatSubKey = "casts" | "damage" | "heals" | "text" | "board_effects" | "weather"
+const COMBAT_SUBKEY: Record<string, CombatSubKey> = {
+  ABILITY: "casts",
+  POKEMON_DAMAGE: "damage",
+  POKEMON_HEAL: "heals",
+  DISPLAY_TEXT: "text",
+  BOARD_EVENT: "board_effects",
+  WEATHER: "weather"
 }
 // Drill-down sections for the merged Combat chip. The source note honors the real distinction: casts/damage/
 // heal/text are broadcastToSpectators (only the board the recorder was watching), while board effects,
 // weather, status and stats are recovered for every board (owner-tagged). The `combat` category is split
-// across the first two sections by sub-type (`only`); status/stats are their own categories.
-const COMBAT_SECTIONS: { cat: Category; label: string; only?: string[] }[] = [
-  { cat: "combat", label: "Casts / damage / heal · recorder's PoV", only: ["ABILITY", "POKEMON_DAMAGE", "POKEMON_HEAL", "DISPLAY_TEXT"] },
-  { cat: "combat", label: "Board effects / weather · all boards", only: ["BOARD_EVENT", "WEATHER"] },
-  { cat: "status", label: "Status · all boards" },
-  { cat: "stats", label: "Stats · all boards" }
+// across the first two sections by sub-type (`only`); status/stats are their own categories. `labelKey` is
+// resolved as t(`replay.eventlog.section.<labelKey>`) at render — a literal union so the key stays known.
+type SectionKey = "casts_pov" | "board_weather" | "status_all" | "stats_all"
+const COMBAT_SECTIONS: { cat: Category; labelKey: SectionKey; only?: string[] }[] = [
+  { cat: "combat", labelKey: "casts_pov", only: ["ABILITY", "POKEMON_DAMAGE", "POKEMON_HEAL", "DISPLAY_TEXT"] },
+  { cat: "combat", labelKey: "board_weather", only: ["BOARD_EVENT", "WEATHER"] },
+  { cat: "status", labelKey: "status_all" },
+  { cat: "stats", labelKey: "stats_all" }
 ]
 
 const DEFAULT_ON: Record<Category, boolean> = {
@@ -213,6 +236,10 @@ const DMG_TYPE = ["physical", "special", "true"]
 
 // Best-effort one-line summary of a ROOM_DATA payload. Kept defensive (payloads vary by type/version);
 // unknown shapes just show the type. Copy is intentionally terse — Blake owns the wording pass.
+// i18n boundary: this is the event log's row CONTENT (a data readout that interpolates game data and would
+// need per-language plural/word-order rules), kept English on purpose — only the log's CHROME (chips,
+// headers, buttons, tooltips above) is translated. The raw `type` column + phase/elimination/action labels
+// (built in replay-index) are the same data layer and likewise stay English. See M7 in BACKLOG.
 type FrameInfo = {
   caster?: string
   target?: string
@@ -320,6 +347,7 @@ export default function ReplayEventLog({
   open: boolean
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   const viewerUid = room.manifest.viewerUid
   const [enabled, setEnabled] = useState<Record<Category, boolean>>(loadFilters)
   // Fine-grained filter: sub-types explicitly turned off within their (still-enabled) category. Default
@@ -634,7 +662,6 @@ export default function ReplayEventLog({
       <button
         key={id}
         className={`rel-subchip${on ? " on" : ""}`}
-        title={`Toggle ${label}`}
         onClick={() =>
           setSubOff((s) => {
             const n = new Set(s)
@@ -657,18 +684,17 @@ export default function ReplayEventLog({
   return (
     <div ref={panelRef} className={`replay-eventlog my-container${multiPlayer ? " multi-player" : ""}`} style={posStyle}>
       <header className="rel-head" onMouseDown={onHeadDown}>
-        <span className="rel-title">Event log</span>
-        <span className="rel-count" title={`${visible.length} shown of ${events.length} total events`}>
+        <span className="rel-title">{t("replay.eventlog.title")}</span>
+        <span className="rel-count">
           {visible.length} / {events.length}
         </span>
         <button
-          className={`rel-follow${follow ? " on" : ""}`}
-          title={follow ? "Following playback — click to scroll the log freely" : "Free scroll — click to follow playback"}
+          className={`rel-follow${!follow ? " on" : ""}`}
           onClick={() => setFollow((f) => !f)}
         >
-          Follow
+          {t("replay.eventlog.free_scroll")}
         </button>
-        <button className="rel-close" title="Close" onClick={onClose}>×</button>
+        <button className="rel-close" title={t("close")} onClick={onClose}>×</button>
       </header>
       <div className="rel-filters">
         {/* The merged Combat chip (casts/damage + status + stats); toggles all three together, drill-down
@@ -680,17 +706,15 @@ export default function ReplayEventLog({
               <span className="rel-chip-wrap has-caret">
                 <button
                   className={`rel-chip rel-chip-combat${anyOn ? " on" : ""}`}
-                  title="Toggle combat — casts, damage, status, and stat changes"
                   onClick={() => setEnabled((e) => {
                     const v = !COMBAT_CATS.some((c) => e[c])
                     return { ...e, combat: v, status: v, stats: v }
                   })}
                 >
-                  Combat
+                  {t("replay.eventlog.cat.combat")}
                 </button>
                 <button
                   className={`rel-caret${expanded === "combat" ? " open" : ""}`}
-                  title="Filter combat by casts / damage / status / stats"
                   onClick={() => setExpanded((x) => (x === "combat" ? null : "combat"))}
                 >
                   ▾
@@ -700,22 +724,21 @@ export default function ReplayEventLog({
           })()}
         {/* The other categories — one chip each, only when the recording has events of that category (same
             data-driven rule as the drill-down, so no empty chip filters to nothing). */}
-        {CATEGORIES.filter((c) => !COMBAT_CATS.includes(c.key) && subtypesByCat.has(c.key)).map((c) => {
-          const drillable = (subtypesByCat.get(c.key)?.size ?? 0) > 1
+        {CAT_ORDER.filter((key) => !COMBAT_CATS.includes(key) && subtypesByCat.has(key)).map((key) => {
+          const drillable = (subtypesByCat.get(key)?.size ?? 0) > 1
+          const label = t(CAT_LABEL_KEY[key])
           return (
-            <span key={c.key} className={`rel-chip-wrap${drillable ? " has-caret" : ""}`}>
+            <span key={key} className={`rel-chip-wrap${drillable ? " has-caret" : ""}`}>
               <button
-                className={`rel-chip rel-chip-${c.key}${enabled[c.key] ? " on" : ""}`}
-                title={`Toggle ${c.label} events`}
-                onClick={() => toggle(c.key)}
+                className={`rel-chip rel-chip-${key}${enabled[key] ? " on" : ""}`}
+                onClick={() => toggle(key)}
               >
-                {c.label}
+                {label}
               </button>
               {drillable && (
                 <button
-                  className={`rel-caret${expanded === c.key ? " open" : ""}`}
-                  title={`Filter individual ${c.label} types`}
-                  onClick={() => setExpanded((x) => (x === c.key ? null : c.key))}
+                  className={`rel-caret${expanded === key ? " open" : ""}`}
+                  onClick={() => setExpanded((x) => (x === key ? null : key))}
                 >
                   ▾
                 </button>
@@ -737,10 +760,18 @@ export default function ReplayEventLog({
                 if (only) subs = subs.filter((s) => only.includes(s))
                 if (!subs.length) return null
                 return (
-                  <Fragment key={sec.label}>
-                    <span className="rel-subhead">{sec.label}</span>
+                  <Fragment key={sec.labelKey}>
+                    <span className="rel-subhead">{t(`replay.eventlog.section.${sec.labelKey}`)}</span>
                     {subs.map((sub) =>
-                      renderSubchip(sec.cat, sub, sec.cat === "combat" ? COMBAT_SUBLABEL[sub] ?? prettyName(sub) : sub)
+                      renderSubchip(
+                        sec.cat,
+                        sub,
+                        sec.cat === "combat" && COMBAT_SUBKEY[sub]
+                          ? t(`replay.eventlog.sub.${COMBAT_SUBKEY[sub]}`)
+                          : sec.cat === "combat"
+                            ? prettyName(sub)
+                            : sub
+                      )
                     )}
                   </Fragment>
                 )
@@ -759,7 +790,6 @@ export default function ReplayEventLog({
               <button
                 key={uid}
                 className={`rel-pchip${on ? " on" : ""}${uid === viewerUid ? " pov" : ""}`}
-                title={`Toggle ${playerNames[uid] || uid}'s events`}
                 onClick={() =>
                   setPlayerOn((s) => {
                     const n = new Set(s)
@@ -792,7 +822,6 @@ export default function ReplayEventLog({
                 data-i={i}
                 className={`rel-row rel-${e.kind} rel-cat-${e.cat}${i === activeIdx ? " active" : ""}`}
                 style={{ top: i * rowH }}
-                title={`seek to ${fmt(e.t - base)}`}
                 onClick={() => onSeekRef.current(e.t)}
               >
                 <span className="rel-t">{fmt(e.t - base)}</span>

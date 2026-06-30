@@ -1,4 +1,5 @@
 import { Component, type CSSProperties, type ReactNode } from "react"
+import i18n from "../../../i18n"
 
 // The app has no error boundaries, so any render error (e.g. an interaction in replay mode that the
 // game UI wasn't built for) unmounts the whole React tree → blank page → refresh. This boundary
@@ -24,14 +25,14 @@ export default class ReplayErrorBoundary extends Component<{ children: ReactNode
       return (
         <div style={S.wrap}>
           <div style={S.card}>
-            <div style={S.title}>The replay view hit an error</div>
+            <div style={S.title}>{i18n.t("replay.boundary_title")}</div>
             <div style={S.msg}>{this.state.error.message}</div>
             <div style={S.row}>
               <button style={S.btn} onClick={() => this.setState({ error: null })}>
-                Resume
+                {i18n.t("replay.resume")}
               </button>
               <button style={S.btnGhost} onClick={() => window.location.reload()}>
-                Reload
+                {i18n.t("replay.reload")}
               </button>
             </div>
           </div>

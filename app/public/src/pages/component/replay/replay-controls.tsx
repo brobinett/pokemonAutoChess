@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
 import {
   nextPhase,
   nextStage,
@@ -19,10 +20,11 @@ import "./replay-ui.css"
 // Skip buttons + markers + bands come from a derived transcript index (replay-index.ts); when it
 // isn't available (decode failure / older capture) the bar degrades to the plain scrubber.
 
-// Capped at 4×: higher multipliers can't be sustained (every Colyseus patch must be applied + rendered,
-// so playback is CPU/render-bound), and a speed button that silently throttles is worse than not offering
-// it. Matches replay.tsx's keyboard-cycle SPEEDS.
-const SPEEDS = [0.5, 1, 2, 4]
+// Playback speeds, shown as a dropdown (not a button row) to keep the bar compact. Capped at 4× — higher
+// multipliers can't be sustained (every Colyseus patch must be applied + rendered, so playback is
+// CPU/render-bound) and a control that silently throttles is worse than not offering it; the slow end goes
+// to 0.125× (8× slower) for frame-by-frame combat watching. Matches replay.tsx's keyboard-cycle SPEEDS.
+const SPEEDS = [0.125, 0.25, 0.5, 1, 2, 4]
 const POS_KEY = "replay.controls.pos"
 const DOCK_GAP = 8 // px gap between the bar's bottom edge and the shop's top edge when default-docked
 
@@ -62,6 +64,7 @@ export default function ReplayControls({
   eventLogOpen: boolean
   onToggleEventLog: () => void
 }) {
+  const { t } = useTranslation()
   const [, force] = useState(0)
   useEffect(() => {
     const id = setInterval(() => force((n) => (n + 1) % 1e6), 150)
@@ -188,16 +191,16 @@ export default function ReplayControls({
 
   return (
     <div ref={barRef} className="replay-controls my-container" style={posStyle}>
-      <span className="rc-handle" title="Drag to move" onMouseDown={onHandleDown}>
+      <span className="rc-handle" title={t("replay.controls.drag")} onMouseDown={onHandleDown}>
         ⠿
       </span>
 
       {targets && (
         <>
-          <button className="bubbly rc-skip" title="Previous stage (Shift+←)" disabled={targets.prevStage == null} onClick={() => go(prevStage)}>
+          <button className="bubbly rc-skip" title={t("replay.controls.prev_stage")} disabled={targets.prevStage == null} onClick={() => go(prevStage)}>
             ⏮
           </button>
-          <button className="bubbly rc-skip" title="Previous phase (←)" disabled={targets.prevPhase == null} onClick={() => go(prevPhase)}>
+          <button className="bubbly rc-skip" title={t("replay.controls.prev_phase")} disabled={targets.prevPhase == null} onClick={() => go(prevPhase)}>
             ‹
           </button>
         </>
@@ -205,7 +208,7 @@ export default function ReplayControls({
 
       <button
         className="bubbly blue rc-play"
-        title={room.ended ? "Restart" : room.paused ? "Play (Space)" : "Pause (Space)"}
+        title={room.ended ? t("replay.controls.restart") : room.paused ? t("replay.controls.play") : t("replay.controls.pause")}
         onClick={() => (room.ended ? onRestart() : room.togglePause())}
       >
         {room.ended ? "↻" : room.paused ? "▶" : "⏸"}
@@ -213,10 +216,10 @@ export default function ReplayControls({
 
       {targets && (
         <>
-          <button className="bubbly rc-skip" title="Next phase (→)" disabled={targets.nextPhase == null} onClick={() => go(nextPhase)}>
+          <button className="bubbly rc-skip" title={t("replay.controls.next_phase")} disabled={targets.nextPhase == null} onClick={() => go(nextPhase)}>
             ›
           </button>
-          <button className="bubbly rc-skip" title="Next stage (Shift+→)" disabled={targets.nextStage == null} onClick={() => go(nextStage)}>
+          <button className="bubbly rc-skip" title={t("replay.controls.next_stage")} disabled={targets.nextStage == null} onClick={() => go(nextStage)}>
             ⏭
           </button>
         </>
@@ -227,15 +230,13 @@ export default function ReplayControls({
           advance/rewind one frame. Back is a reboot-seek (the decoder is forward-only) so it's a touch
           slower than forward. */}
       <span className="rc-step">
-        <button className="bubbly rc-skip" title="Step back one frame (,)" onClick={onStepBackward}>
+        <button className="bubbly rc-skip" title={t("replay.controls.step_back")} onClick={onStepBackward}>
           −1
         </button>
-        <button className="bubbly rc-skip" title="Step forward one frame (.)" onClick={onStepForward}>
+        <button className="bubbly rc-skip" title={t("replay.controls.step_forward")} onClick={onStepForward}>
           +1
         </button>
       </span>
-
-      <span className="rc-time">{fmt(elapsed)}</span>
 
       <div className="rc-track-wrap">
       <div
@@ -270,7 +271,6 @@ export default function ReplayControls({
             key={`stage-${i}`}
             className="rc-mark stage"
             style={{ left: `${frac(st.t) * 100}%` }}
-            title={`Stage ${st.stage}  (${fmt(st.t - base)})`}
             onClick={(e) => {
               e.stopPropagation()
               onSeek(st.t)
@@ -287,36 +287,44 @@ export default function ReplayControls({
                 <span className="rc-hover-time">{fmt(hover.ms - base)}</span>
                 {seg ? (
                   <span className={`rc-hover-seg ${seg.phaseLabel.toLowerCase()}`}>
-                    S{seg.stage} · {seg.phaseLabel}
+                    {t("replay.controls.pos", { stage: seg.stage, phase: seg.phaseLabel })}
                   </span>
                 ) : null}
               </div>
             )
           })()}
-        {/* Current position (stage · phase), sat under the timeline so it tracks the playhead in place
-            rather than floating at the far end of the bar. Doubles as the REPLAY / Replay-ended badge. */}
-        <div className={`rc-pos${room.ended ? " ended" : ""}`}>
-          {room.ended ? "Replay ended" : here ? `S${here.stage} · ${here.phaseLabel}` : "REPLAY"}
+        {/* Under the timeline: the elapsed/total time and the current position (stage · phase), tracking
+            the playhead in place rather than floating at the bar's ends. rc-pos doubles as the REPLAY /
+            Replay-ended badge. */}
+        <div className="rc-subbar">
+          <span className="rc-time">
+            {fmt(elapsed)}/{fmt(span)}
+          </span>
+          <div className={`rc-pos${room.ended ? " ended" : ""}`}>
+            {room.ended
+              ? t("replay.controls.ended")
+              : here
+                ? t("replay.controls.pos", { stage: here.stage, phase: here.phaseLabel })
+                : t("replay.controls.badge")}
+          </div>
         </div>
       </div>
 
-      <span className="rc-time">{fmt(span)}</span>
-
-      <div className="rc-speeds">
+      <select
+        className="rc-speed-select"
+        value={room.getSpeed()}
+        onChange={(e) => room.setSpeed(Number(e.target.value))}
+      >
         {SPEEDS.map((s) => (
-          <button
-            key={s}
-            className={`bubbly${room.getSpeed() === s ? " blue" : ""}`}
-            onClick={() => room.setSpeed(s)}
-          >
+          <option key={s} value={s}>
             {s}×
-          </button>
+          </option>
         ))}
-      </div>
+      </select>
 
       <button
         className={`bubbly rc-events${eventLogOpen ? " blue" : ""}`}
-        title="Event log — the frames this replay is built from"
+        title={t("replay.controls.events")}
         onClick={onToggleEventLog}
       >
         ☰

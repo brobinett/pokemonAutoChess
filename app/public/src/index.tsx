@@ -12,7 +12,6 @@ import Game from "./pages/game"
 import { Gameboy } from "./pages/gameboy"
 import Lobby from "./pages/lobby"
 import Preparation from "./pages/preparation"
-import RecorderEndGame from "./pages/component/replay/recorder-endgame"
 import Replay from "./pages/replay"
 import { SpriteDebug } from "./pages/sprite-viewer"
 import TranslationsPage from "./pages/translations"
@@ -50,15 +49,7 @@ i18n.on("initialized", () => {
               <Route path="/preparation" element={<Preparation />} />
               <Route path="/game" element={<Game />} />
               <Route path="/replay" element={<Replay />} />
-              <Route
-                path="/after"
-                element={
-                  <>
-                    <AfterGame />
-                    <RecorderEndGame />
-                  </>
-                }
-              />
+              <Route path="/after" element={<AfterGame />} />
               <Route path="/bot-builder" element={<BotBuilder />} />
               <Route path="/bot-admin" element={<BotManagerPanel />} />
               <Route path="/sprite-viewer" element={<SpriteDebug />} />

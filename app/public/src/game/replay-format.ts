@@ -174,8 +174,17 @@ export function readReplayHeader(bytes: Uint8Array): ReplayHeaderMeta | null {
   }
 }
 
+/** A detected build-skew between a recording and the viewer's running build — `kind` selects the message
+ * and carries the version/build strings to interpolate. Null (no skew) when the builds match or the
+ * recorded build is unknown. The viewer maps this to a localized string via `t("replay.skew.<kind>", skew)`
+ * (see replay.tsx); keeping detection here — pure, no i18n — leaves it usable from the worker + Node tests. */
+export type ReplaySkew =
+  | { kind: "version"; recorded: string; running: string }
+  | { kind: "serializer"; recorded: string; running: string }
+  | { kind: "build"; version: string; recorded: string; running: string }
+
 /** Compare a recording's stamped build (`manifest.game`) against the build running the viewer, returning a
- * one-line human message when they differ, or null when they match (or the recorded build is unknown).
+ * skew descriptor when they differ, or null when they match (or the recorded build is unknown).
  *
  * State decode is reflection-driven (the schema definition rides the handshake frame), so a balance patch —
  * same schema shape, different numbers — plays back correctly with no gating. The case this guards is a
@@ -197,30 +206,29 @@ export function readReplayHeader(bytes: Uint8Array): ReplayHeaderMeta | null {
  * when BOTH sides carry a real `assetsVersion` — so a pre-`assetsVersion` capture (old in-client `commit`
  * field, or an extension capture with no separate field) doesn't false-alarm on the same patch; it just
  * can't distinguish builds within a patch, which is an under-warn, not a wrong-warn. */
-export function buildSkewMessage(
+export function detectBuildSkew(
   recorded:
     | { version?: string; assetsVersion?: string; serializerId?: string }
     | null
     | undefined,
   running: { version: string; assetsVersion: string; serializerId?: string }
-): string | null {
+): ReplaySkew | null {
   if (!recorded?.version) return null // unknown / foreign header — nothing to compare against
   const recV = semver(recorded.version)
   const runV = semver(running.version)
-  if (recV !== runV)
-    return `This replay was recorded on game version ${recV}; you're running ${runV}. Some of it may not play back correctly.`
+  if (recV !== runV) return { kind: "version", recorded: recV, running: runV }
   if (
     recorded.serializerId &&
     running.serializerId &&
     recorded.serializerId !== running.serializerId
   )
-    return `This replay was recorded with a different state format (${recorded.serializerId} vs ${running.serializerId}). Some of it may not play back correctly.`
+    return { kind: "serializer", recorded: recorded.serializerId, running: running.serializerId }
   if (
     recorded.assetsVersion &&
     running.assetsVersion &&
     recorded.assetsVersion !== running.assetsVersion
   )
-    return `This replay was recorded on a different build of ${runV} (${recorded.assetsVersion} vs ${running.assetsVersion}). Most of it should play back, but some details may differ.`
+    return { kind: "build", version: runV, recorded: recorded.assetsVersion, running: running.assetsVersion }
   return null
 }
 

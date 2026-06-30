@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { useTranslation } from "react-i18next"
 import {
   downloadReplay,
   getActiveGameRoom,
@@ -7,13 +8,14 @@ import {
 import { useAppSelector } from "../../../hooks"
 import "./replay-ui.css"
 
-// Prominent "Download replay" button shown on the after-game screen. Uses the game room retained by
-// the recorder (rooms.game is cleared once the game ends), so the match you just played is still
-// available to download. Mounted alongside <AfterGame/> by the /after route — no edits to that page.
-// Frame count/span come from the DURABLE store (so they reflect a recording that survived a crash +
-// reconnect), polled while mounted as the final frames finish flushing. Styled with the game's native
-// classes (.my-container/.bubbly) so it matches the after-game UI.
+// "Download replay" button shown on the after-game screen, just below its Back-to-Lobby button (rendered
+// by <AfterGame/>). Uses the game room retained by the recorder (rooms.game is cleared once the game ends),
+// so the match you just played is still available to download.
+// The DURABLE store's frame count gates the button (poll while mounted as the final frames flush): show
+// it only once a non-empty recording exists — survives a crash + reconnect — never for an empty capture.
+// Styled with the game's native .bubbly button class so it matches the Back-to-Lobby button above it.
 export default function RecorderEndGame() {
+  const { t } = useTranslation()
   const uid = useAppSelector((s) => s.network.uid)
   const room = getActiveGameRoom()
   const roomId = room?.roomId
@@ -37,15 +39,10 @@ export default function RecorderEndGame() {
   if (!room || !info || info.frames === 0) return null
 
   return (
-    <div className="recorder-endgame my-container">
-      <span className="re-label">Match recorded</span>
-      <span className="re-meta">
-        {info.frames} frames · {Math.round(info.ms / 1000)}s
-      </span>
+    <div className="recorder-endgame">
       <button className="bubbly blue" onClick={() => void downloadReplay(room, uid)}>
-        ⬇ Download replay
+        ⬇ {t("replay.endgame.download")}
       </button>
-      <span className="re-hint">opens in /replay</span>
     </div>
   )
 }

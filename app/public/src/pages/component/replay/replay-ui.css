@@ -52,8 +52,6 @@
 .replay-controls .rc-time {
   font-variant-numeric: tabular-nums;
   color: var(--color-fg-secondary);
-  min-width: 3em;
-  text-align: center;
 }
 
 /* wraps the track so the hover tooltip can sit above it without being clipped by the track's overflow.
@@ -67,11 +65,12 @@
   gap: 2px;
 }
 
-/* The bar docks between the gold and level displays, so it can't grow wider — readability comes from a
- * THICKER track + a clear playhead instead. */
+/* With the 4 speed buttons collapsed into one dropdown and the two end-cap times moved into a single chip
+ * below the track, the timeline takes the freed width: a wider vw than the old 18vw, so the bar keeps its
+ * length with a longer, more scrubbable track. */
 .replay-controls .rc-track {
   position: relative;
-  width: 18vw;
+  width: 32vw;
   min-width: 210px;
   height: 14px;
   background: var(--color-bg-tertiary);
@@ -213,15 +212,35 @@
   opacity: 0.75;
 }
 
-.replay-controls .rc-speeds {
-  display: flex;
-  gap: 0.25em;
+/* Playback-speed dropdown — mirrors the bar's .bubbly buttons (bg/border/radius/inset-shadow/120% font)
+ * so it reads as a sibling control, not a foreign form input; replaces the old 4-button row. */
+.replay-controls .rc-speed-select {
+  font-size: 120%;
+  color: #fff;
+  background: var(--color-bg-secondary);
+  border: var(--border-thin);
+  border-radius: 12px;
+  box-shadow: inset -6px -6px 0 0 var(--color-bg-tertiary), var(--shadow-clickable);
+  padding: 0.15em 0.5em calc(0.15em + 3px);
+  text-shadow: 2px 2px 2px #00000040;
+  cursor: var(--cursor-hover);
+  font-variant-numeric: tabular-nums;
 }
 
 /* frame-step cluster (shown when paused) */
 .replay-controls .rc-step {
   display: flex;
   gap: 0.25em;
+}
+
+/* row under the timeline: elapsed/total time on the left, current stage·phase chip on the right (both
+ * docked here instead of floating at the bar's ends) */
+.replay-controls .rc-subbar {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5em;
 }
 
 /* current stage·phase chip, docked under the timeline (doubles as the REPLAY / ended badge) */
@@ -237,32 +256,10 @@
   color: var(--color-fg-gold);
 }
 
-/* ── After-game download bar (/after) ──────────────────────────────────────────────────────── */
+/* ── After-game download button (/after) ───────────────────────────────────────────────────── */
+/* In normal flow, just below the Back-to-Lobby button (same left inset), not a floating overlay. */
 .recorder-endgame {
-  position: fixed;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  gap: 0.75em;
-  padding: 0.4em 0.8em;
-  font-size: 14px;
-}
-.recorder-endgame .re-label {
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  color: var(--color-fg-primary);
-}
-.recorder-endgame .re-meta {
-  font-variant-numeric: tabular-nums;
-  color: var(--color-fg-secondary);
-}
-.recorder-endgame .re-hint {
-  font-size: 11px;
-  color: var(--color-fg-secondary);
-  opacity: 0.8;
+  margin: 0.5em 0 0 10px;
 }
 
 /* ── Full-screen overlays (loading / seeking / error) + the file picker ─────────────────────── */
@@ -484,7 +481,7 @@
   color: var(--color-fg-secondary);
 }
 
-/* library row tag for a recording made on a different game build (reuses buildSkewMessage) */
+/* library row tag for a recording made on a different game build (reuses detectBuildSkew) */
 .replay-row-skew {
   display: inline-block;
   margin-left: 0.5em;
