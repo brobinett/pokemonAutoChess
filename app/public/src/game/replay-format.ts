@@ -241,6 +241,25 @@ export function readReplayTrailer(buf: Uint8Array): ReplaySummary | null {
   return parseTrailerFooter(buf)?.summary ?? null
 }
 
+/** Ensure a v1 `.colreplay` buffer carries a match-summary footer: append one for `summary` when the buffer
+ *  doesn't already end with a trailer, else return it UNCHANGED. Used by the after-game download, whose source
+ *  is the still-open OPFS file — that file only gets its trailer written at close (lobby-return), so a download
+ *  taken on the after-game screen would otherwise be trailer-less (no team/placement when re-opened, unlike the
+ *  library's post-lobby copy). Appending in-memory to the downloaded bytes keeps the portable file self-contained
+ *  without writing into the still-growing OPFS file. Never double-appends (a second footer would push the first
+ *  into the frame region and corrupt the decode), and no-ops when there's no summary to add. */
+export function ensureReplayTrailer(
+  bytes: Uint8Array<ArrayBuffer>,
+  summary: ReplaySummary | null | undefined
+): Uint8Array<ArrayBuffer> {
+  if (!summary || parseTrailerFooter(bytes)) return bytes
+  const trailer = encodeReplayTrailer(summary)
+  const out = new Uint8Array(bytes.length + trailer.length)
+  out.set(bytes, 0)
+  out.set(trailer, bytes.length)
+  return out
+}
+
 /** A detected build-skew between a recording and the viewer's running build — `kind` selects the message
  * and carries the version/build strings to interpolate. Null (no skew) when the builds match or the
  * recorded build is unknown. The viewer maps this to a localized string via `t("replay.skew.<kind>", skew)`

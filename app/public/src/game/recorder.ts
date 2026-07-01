@@ -6,7 +6,7 @@ import store from "../stores"
 import { type CapturedFrame, createFlushController } from "./recorder-flush-core"
 import type { ReplayWriterMeta } from "./opfs-replay-writer"
 import type { ReplayFileInfo } from "./recorder-worker-core"
-import { loadReplay, type ReplaySummary } from "./replay-format"
+import { ensureReplayTrailer, loadReplay, type ReplaySummary } from "./replay-format"
 import type { ReplayFrame, ReplayManifest } from "./replay-room"
 import type GameState from "../../../rooms/states/game-state"
 import { Transfer } from "../../../types"
@@ -182,7 +182,7 @@ function getWorker(): Worker {
 }
 
 /** Trigger a browser download of v1 `.colreplay` bytes (a stable filename derived from recordedAt). */
-function triggerBrowserDownload(buf: ArrayBuffer, recordedAt: string): void {
+function triggerBrowserDownload(buf: BufferSource, recordedAt: string): void {
   const blob = new Blob([buf], { type: "application/octet-stream" })
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
@@ -393,7 +393,14 @@ export async function downloadReplay(
   await controller.drain(room.roomId) // persist + ack every captured frame before reading the file
   const buf = await fetchReplayBytes(room.roomId)
   const recordedAt = controller.recordedAt(room.roomId) ?? new Date().toISOString()
-  triggerBrowserDownload(buf, recordedAt)
+  // The OPFS file's match-summary trailer is only written at lobby-return (resetActiveGameRoom → worker close),
+  // so an after-game download taken here is trailer-less: re-opening it would show no final team/placement even
+  // though the library's post-lobby copy does (the source of the "picker shows no portraits" bug). Append the
+  // trailer in-memory to the downloaded bytes — captured at GAME_END (pendingSummary), or read fresh from the
+  // retained final state — so the portable file is self-contained and matches the library copy. ensureReplayTrailer
+  // no-ops if the bytes already carry a trailer (a re-download after the file was sealed) or if no summary exists.
+  const bytes = ensureReplayTrailer(new Uint8Array(buf), pendingSummary ?? captureSummary())
+  triggerBrowserDownload(bytes, recordedAt)
 }
 
 // --- the /replay library (list / watch / download / delete stored recordings) ----------------------

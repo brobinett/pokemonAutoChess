@@ -852,6 +852,11 @@ function ReplayLibrary({
           </div>
 
           <div className="replay-landing-left">
+            {/* Header mirroring the right column's "Saved in this browser" head so the picker/preview top
+                lines up with the first library row (and the two columns read as a balanced pair). */}
+            <div className="replay-library-head">
+              <span className="replay-library-label">{t("replay.library.open_file")}</span>
+            </div>
         {preview ? (
           <div className="replay-preview my-box">
             <div className="replay-preview-head">
@@ -901,23 +906,23 @@ function ReplayLibrary({
             </label>
           </div>
         )}
-          </div>
-        </div>
 
-        {/* Limitations blurb spans the full card width BELOW the two columns (keeps the card landscape +
-            balanced rather than making the left column weirdly tall). Inline emphasis is flattened into the
-            translation values (one key per paragraph / li): PAC has no <Trans> in app UI. */}
-        <div className="replay-limitations">
-          <div className="replay-limitations-title">{t("replay.about.title")}</div>
-          <p>{t("replay.about.privacy")}</p>
-          <p>{t("replay.about.reconstructed")}</p>
-          <ul>
-            <li>{t("replay.about.pov_shop")}</li>
-            <li>{t("replay.about.pov_combat")}</li>
-            <li>{t("replay.about.pov_income")}</li>
-          </ul>
-          <p>{t("replay.about.gap")}</p>
-          <p>{t("replay.about.playback")}</p>
+            {/* Limitations blurb sits under the picker in the LEFT column (a plain two-column card, NOT a
+                full-width footer). Inline emphasis is flattened into the translation values (one key per
+                paragraph / li): PAC has no <Trans> in app UI. */}
+            <div className="replay-limitations">
+              <div className="replay-limitations-title">{t("replay.about.title")}</div>
+              <p>{t("replay.about.privacy")}</p>
+              <p>{t("replay.about.reconstructed")}</p>
+              <ul>
+                <li>{t("replay.about.pov_shop")}</li>
+                <li>{t("replay.about.pov_combat")}</li>
+                <li>{t("replay.about.pov_income")}</li>
+              </ul>
+              <p>{t("replay.about.gap")}</p>
+              <p>{t("replay.about.playback")}</p>
+            </div>
+          </div>
         </div>
       </div>
     </div>

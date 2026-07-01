@@ -5050,6 +5050,7 @@
 		"library": {
 			"title": "Watch a replay",
 			"saved_here": "Saved in this browser",
+			"open_file": "Open a file",
 			"keep_before": "Keep",
 			"keep_after": "most recent",
 			"loading": "Loading saved replays…",
@@ -5062,8 +5063,8 @@
 			"watch": "Watch",
 			"download_tip": "Download",
 			"prune_hint": "Older replays are removed automatically when you start a new game. Download any you want to keep",
-			"dropzone_pre": "Or open a",
-			"dropzone_post": "file from your computer:",
+			"dropzone_pre": "Drag a",
+			"dropzone_post": "file here, or",
 			"choose_file": "Choose a file",
 			"reading": "Reading replay…",
 			"play": "Play",

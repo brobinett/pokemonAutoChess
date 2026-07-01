@@ -443,8 +443,8 @@
 /* replays library: the list of recordings stored in this browser (OPFS), each with watch/download/delete,
    plus a "keep most recent N" retention control. Wider than the bare picker card to fit the rows. */
 .replay-library-card {
-  max-width: 1300px;
-  width: min(1300px, 95vw);
+  max-width: 1150px;
+  width: min(1150px, 95vw);
 }
 
 /* /replay landing — two columns: dropzone + limitations on the LEFT, the recordings list (scrollable) on
@@ -470,34 +470,30 @@
   order: -1; /* renders in the LEFT column (before the recordings, which come first in source) */
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  /* a stable slot height so swapping the dropzone ↔ preview (which differ in height, and vary with team
-     size) doesn't change the card height and re-centre it — the file-pick jitter fix, WITHOUT giving up
-     vertical centering (the landing overlay stays centered) */
-  min-height: 150px;
-  gap: 1.1em;
+  /* content flows from the top: header, then picker/preview, then the limitations blurb. No uniform gap —
+     the header carries the shared .replay-library-head margin-bottom (matching the right column) so the picker
+     top lines up with the first library row; the limitations blurb gets its own top margin below. */
+  justify-content: flex-start;
 }
 .replay-landing-left .replay-dropzone {
   margin-top: 0;
+}
+/* A stable slot height so swapping the dropzone ↔ preview (which differ in height, and the preview varies
+   with team size) doesn't jump the card height — the file-pick jitter fix. */
+.replay-landing-left .replay-dropzone,
+.replay-landing-left .replay-preview {
+  min-height: 132px;
+  justify-content: center;
 }
 /* the recordings column scrolls within a capped height so a full keep-20 library never blows out the card */
 .replay-landing-right .replay-library-list {
   max-height: 46vh;
 }
-/* Limitations blurb: a full-width footer below the two columns, flowed into columns so the lines stay a
-   readable length while filling the width (keeps the card landscape, not "weirdly long"). Title spans all. */
-.replay-landing-cols + .replay-limitations {
+/* Limitations blurb inside the left column (under the picker): fills the column width — no 42em cap that would
+   leave the text narrower than the column. The base .replay-limitations rule supplies the divider + type. */
+.replay-landing-left .replay-limitations {
   max-width: none;
-  margin-top: 1.3em;
-  columns: 2;
-  column-gap: 2.5em;
-}
-.replay-landing-cols + .replay-limitations .replay-limitations-title {
-  column-span: all;
-}
-.replay-landing-cols + .replay-limitations p,
-.replay-landing-cols + .replay-limitations ul {
-  break-inside: avoid;
+  margin-top: 1.3em; /* separate the blurb from the picker (the column has no uniform gap) */
 }
 .replay-library {
   width: 100%;
@@ -509,6 +505,9 @@
   justify-content: space-between;
   gap: 1em;
   margin-bottom: 0.5em;
+  /* Both columns' heads share this height so the picker (left) and the first recording row (right) start on
+     the same line — the left head holds only a label, the right also a "Keep" select that's a touch taller. */
+  min-height: 1.9em;
 }
 .replay-library-label {
   font-weight: 700;
