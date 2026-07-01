@@ -400,34 +400,9 @@
   display: none;
 }
 
-/* two-step external-file preview: a chosen/dropped file's team + placement (from its trailer) with a Play
-   button, shown in the dropzone's place before booting */
-.replay-preview {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5em;
-  padding: 0.6em 0.8em;
-}
-.replay-preview-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.8em;
-}
-.replay-preview-name {
-  font-weight: 700;
-  color: var(--color-fg-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.replay-preview-actions {
-  display: flex;
-  gap: 0.5em;
-  margin-top: 0.2em;
-}
-/* the preview shows the same rich summary as the library rows (portrait size + placement are shared, see
-   .replay-row-summary below) */
+/* The two-step external-file PREVIEW reuses the library row's presentation (.replay-row + RecordingSummary),
+   so the picked file reads as "a row for the file you just chose" — only the action buttons differ. No
+   preview-specific styling needed here; see .replay-row / .replay-row-* below. */
 
 /* replays library: the list of recordings stored in this browser (OPFS), each with watch/download/delete,
    plus a "keep most recent N" retention control. Wider than the bare picker card to fit the rows. */
@@ -466,11 +441,15 @@
 .replay-landing-left .replay-dropzone {
   margin-top: 0;
 }
-/* A stable slot height so swapping the dropzone ↔ preview (which differ in height, and the preview varies
-   with team size) doesn't jump the card height — the file-pick jitter fix. */
+/* A stable slot height so swapping the dropzone ↔ preview (which differ in height, and the preview — a
+   .replay-row — varies with team size) doesn't jump the card height — the file-pick jitter fix. */
 .replay-landing-left .replay-dropzone,
-.replay-landing-left .replay-preview {
+.replay-landing-left > .replay-row {
   min-height: 132px;
+}
+/* center the dropzone's own content vertically in that slot (it's a flex COLUMN, so this is the block axis;
+   the preview row keeps its default row justify-content: space-between) */
+.replay-landing-left .replay-dropzone {
   justify-content: center;
 }
 /* the recordings column scrolls within a capped height so a full keep-20 library never blows out the card */
@@ -540,10 +519,15 @@
   flex-direction: column;
   min-width: 0;
 }
-.replay-row-when {
-  font-weight: 600;
-  font-size: 0.9em;
+/* POV player name — the row's primary line (shown in library rows AND the picker preview). For a recording
+   made on a different account sharing this browser it disambiguates whose game it is. */
+.replay-row-name {
+  font-weight: 700;
+  font-size: 0.95em;
   color: var(--color-fg-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .replay-row-meta {
   font-size: 0.76em;

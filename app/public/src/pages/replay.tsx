@@ -1,7 +1,7 @@
 import type { Room } from "@colyseus/sdk"
 import type { User } from "@firebase/auth-types"
 import firebase from "firebase/compat/app"
-import { useEffect, useRef, useState } from "react"
+import { type ReactNode, useEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { useTranslation } from "react-i18next"
 import pkg from "../../../../package.json"
@@ -624,11 +624,12 @@ function ReplayGameHost() {
   return <Game />
 }
 
-// Format a stored recording's timestamp for a list row: the header's recordedAt when present, else the
-// file's mtime. Both are wall-clock instants shown in the viewer's locale.
-function formatWhen(f: ReplayFileInfo): string {
-  const ms = f.recordedAt ? Date.parse(f.recordedAt) : Number.NaN
-  return new Date(Number.isFinite(ms) ? ms : f.mtime).toLocaleString(undefined, {
+// Format a recording's timestamp: the header's recordedAt (the real match time) when present, else a
+// fallback wall-clock instant (a stored file's mtime, or a picked File's lastModified). Shown in the
+// viewer's locale.
+function formatWhen(recordedAt: string | null, fallbackMs: number): string {
+  const ms = recordedAt ? Date.parse(recordedAt) : Number.NaN
+  return new Date(Number.isFinite(ms) ? ms : fallbackMs).toLocaleString(undefined, {
     dateStyle: "medium",
     timeStyle: "short"
   })
@@ -667,6 +668,57 @@ function RowSummary({ summary }: { summary: ReplaySummary }) {
   )
 }
 
+// One recording's summary, shown IDENTICALLY in a library row and in the file-picker preview (the two are the
+// same object — a recording — so they share this presentation). It renders the POV name, a date · size ·
+// version meta line (+ an "other build" skew tag), and the Top-N + team; only the action buttons differ
+// between the two contexts, so they're passed in as `actions`. Every field is available in both places (the
+// picked File gives size + lastModified; the decoded manifest gives recordedAt / version / summary).
+function RecordingSummary({
+  name,
+  recordedAt,
+  fallbackMs,
+  bytes,
+  game,
+  summary,
+  actions
+}: {
+  name?: string
+  recordedAt: string | null
+  fallbackMs: number
+  bytes: number
+  game?: { version: string; assetsVersion?: string; serializerId?: string } | null
+  summary?: ReplaySummary | null
+  actions: ReactNode
+}) {
+  const { t } = useTranslation()
+  const skew = game ? detectBuildSkew(game, RUNNING_BUILD) : null
+  return (
+    <div className="replay-row">
+      <div className="replay-row-info">
+        {name && <span className="replay-row-name">{name}</span>}
+        <span className="replay-row-meta">
+          {formatWhen(recordedAt, fallbackMs)} · {formatSize(bytes)}
+          {game?.version ? ` · ${game.version}` : ""}
+          {skew ? (
+            <span
+              className="replay-row-skew"
+              title={t("replay.library.other_build_tip")}
+            >
+              {t("replay.library.other_build")}
+            </span>
+          ) : null}
+        </span>
+        {summary ? (
+          <RowSummary summary={summary} />
+        ) : (
+          <span className="replay-row-meta">{t("replay.library.no_summary")}</span>
+        )}
+      </div>
+      <div className="replay-row-actions">{actions}</div>
+    </div>
+  )
+}
+
 // The /replay landing screen: a library of recordings stored in this browser (OPFS) plus the option to
 // open an external `.colreplay` file. Each stored row can be Watched (loaded straight from OPFS — no
 // manual file pick), Downloaded (to a portable file), or Deleted. A "keep most recent N" control edits the
@@ -689,7 +741,12 @@ function ReplayLibrary({
   // Two-step external-file open: choosing/dropping a file DECODES it (loadReplay, the same decode Play would
   // do — not wasted) and holds the manifest for a preview (team + placement from its trailer) instead of
   // booting straight away; Play then boots the already-decoded manifest.
-  const [preview, setPreview] = useState<{ manifest: ReplayManifest; name: string } | null>(null)
+  const [preview, setPreview] = useState<{
+    manifest: ReplayManifest
+    name: string
+    size: number
+    lastModified: number
+  } | null>(null)
   const [reading, setReading] = useState(false)
   const [keep, setKeep] = usePreference("keepReplays")
   const [recording] = usePreference("recordReplays")
@@ -712,7 +769,12 @@ function ReplayLibrary({
     setReading(true)
     f.arrayBuffer()
       .then((b) => {
-        setPreview({ manifest: loadReplay(b), name: f.name })
+        setPreview({
+          manifest: loadReplay(b),
+          name: f.name,
+          size: f.size,
+          lastModified: f.lastModified
+        })
         setReading(false)
       })
       .catch((e) => {
@@ -787,65 +849,59 @@ function ReplayLibrary({
           ) : (
             <ul className="replay-library-list">
               {files.map((f) => (
-                <li key={f.roomId} className="replay-row">
-                  <div className="replay-row-info">
-                    <span className="replay-row-when">{formatWhen(f)}</span>
-                    <span className="replay-row-meta">
-                      {formatSize(f.bytes)}
-                      {f.game ? ` · ${f.game.version}` : ""}
-                      {f.game && detectBuildSkew(f.game, RUNNING_BUILD) ? (
-                        <span
-                          className="replay-row-skew"
-                          title={t("replay.library.other_build_tip")}
-                        >
-                          {t("replay.library.other_build")}
-                        </span>
-                      ) : null}
-                    </span>
-                    {f.summary && <RowSummary summary={f.summary} />}
-                  </div>
-                  {confirmDelete === f.roomId ? (
-                    <div className="replay-row-actions">
-                      <span className="replay-confirm-q">{t("replay.library.delete_q")}</span>
-                      <button
-                        className="bubbly red replay-row-btn"
-                        onClick={() => remove(f.roomId)}
-                      >
-                        {t("yes")}
-                      </button>
-                      <button
-                        className="bubbly replay-row-btn"
-                        onClick={() => setConfirmDelete(null)}
-                      >
-                        {t("no")}
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="replay-row-actions">
-                      <button
-                        className="bubbly blue replay-row-btn"
-                        disabled={busy}
-                        onClick={() => watchStored(f.roomId)}
-                      >
-                        ▶ {t("replay.library.watch")}
-                      </button>
-                      <button
-                        className="bubbly replay-row-btn"
-                        disabled={busy}
-                        title={t("replay.library.download_tip")}
-                        onClick={() => download(f)}
-                      >
-                        ⬇
-                      </button>
-                      <button
-                        className="bubbly replay-row-btn"
-                        title={t("delete")}
-                        onClick={() => setConfirmDelete(f.roomId)}
-                      >
-                        🗑
-                      </button>
-                    </div>
-                  )}
+                <li key={f.roomId}>
+                  <RecordingSummary
+                    name={f.summary?.name}
+                    recordedAt={f.recordedAt}
+                    fallbackMs={f.mtime}
+                    bytes={f.bytes}
+                    game={f.game}
+                    summary={f.summary}
+                    actions={
+                      confirmDelete === f.roomId ? (
+                        <>
+                          <span className="replay-confirm-q">{t("replay.library.delete_q")}</span>
+                          <button
+                            className="bubbly red replay-row-btn"
+                            onClick={() => remove(f.roomId)}
+                          >
+                            {t("yes")}
+                          </button>
+                          <button
+                            className="bubbly replay-row-btn"
+                            onClick={() => setConfirmDelete(null)}
+                          >
+                            {t("no")}
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            className="bubbly blue replay-row-btn"
+                            disabled={busy}
+                            onClick={() => watchStored(f.roomId)}
+                          >
+                            ▶ {t("replay.library.watch")}
+                          </button>
+                          <button
+                            className="bubbly replay-row-btn"
+                            disabled={busy}
+                            title={t("replay.library.download_tip")}
+                            onClick={() => download(f)}
+                          >
+                            ⬇
+                          </button>
+                          <button
+                            className="bubbly replay-row-btn"
+                            title={t("delete")}
+                            onClick={() => setConfirmDelete(f.roomId)}
+                          >
+                            🗑
+                          </button>
+                        </>
+                      )
+                    }
+                  />
                 </li>
               ))}
             </ul>
@@ -861,29 +917,30 @@ function ReplayLibrary({
               <span className="replay-library-label">{t("replay.library.open_file")}</span>
             </div>
         {preview ? (
-          <div className="replay-preview my-box">
-            <div className="replay-preview-head">
-              <span className="replay-preview-name">
-                {preview.manifest.summary?.name ?? preview.name}
-              </span>
-              {preview.manifest.game ? (
-                <span className="replay-row-meta">{preview.manifest.game.version}</span>
-              ) : null}
-            </div>
-            {preview.manifest.summary ? (
-              <RowSummary summary={preview.manifest.summary} />
-            ) : (
-              <div className="replay-row-meta">{t("replay.library.no_summary")}</div>
-            )}
-            <div className="replay-preview-actions">
-              <button className="bubbly blue" onClick={playPreview}>
-                ▶ {t("replay.library.play")}
-              </button>
-              <button className="bubbly" onClick={() => setPreview(null)}>
-                {t("replay.library.choose_another")}
-              </button>
-            </div>
-          </div>
+          // The picked file rendered with the SAME presentation as a library row — only the actions differ
+          // (Play / Choose another vs Watch / download / delete). Falls back to the filename for the name when
+          // the file carries no trailer (external file with no POV name).
+          <RecordingSummary
+            name={preview.manifest.summary?.name ?? preview.name}
+            recordedAt={preview.manifest.recordedAt ?? null}
+            fallbackMs={preview.lastModified}
+            bytes={preview.size}
+            game={preview.manifest.game}
+            summary={preview.manifest.summary}
+            actions={
+              <>
+                <button className="bubbly blue replay-row-btn" onClick={playPreview}>
+                  ▶ {t("replay.library.play")}
+                </button>
+                <button
+                  className="bubbly replay-row-btn"
+                  onClick={() => setPreview(null)}
+                >
+                  {t("replay.library.choose_another")}
+                </button>
+              </>
+            }
+          />
         ) : (
           <div className={`replay-dropzone${over ? " over" : ""}`}>
             <div className="replay-overlay-sub">
