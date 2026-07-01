@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { PkmByIndex } from "../../../../../types/enum/Pokemon"
+import { type FrameInfo, formatMessageRow, formatReplayEvent, phaseWord, statLabel, statusLabel } from "../../../game/replay-event-format"
 import { prettyName, type ReplayIndex } from "../../../game/replay-index"
 import type { ReplayRoom } from "../../../game/replay-room"
 import "./replay-event-log.css"
@@ -244,96 +244,12 @@ const fmt = (ms: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
 }
 
-// AttackType: PHYSICAL=0, SPECIAL=1, TRUE=2 (app/types/enum/Game.ts).
-const DMG_TYPE = ["physical", "special", "true"]
-
-// Best-effort one-line summary of a ROOM_DATA payload. Kept defensive (payloads vary by type/version);
-// unknown shapes just show the type. Copy is intentionally terse — Blake owns the wording pass.
-// i18n boundary: this is the event log's row CONTENT (a data readout that interpolates game data and would
-// need per-language plural/word-order rules), kept English on purpose — only the log's CHROME (chips,
-// headers, buttons, tooltips above) is translated. The raw `type` column + phase/elimination/action labels
-// (built in replay-index) are the same data layer and likewise stay English. See M7 in BACKLOG.
-type FrameInfo = {
-  caster?: string
-  target?: string
-  owner?: string // the recorder's camera (spectatedPlayerId) for a camera-scoped combat row; summarize ignores it
-  dig?: { x: number; y: number; depth: number }
-  income?: { base: number; interest: number; streak: number }
-}
-function summarize(type: string, payload: unknown, info?: FrameInfo): string {
-  const p = payload as Record<string, unknown> | number | null
-  const names = info // combat caster/target naming reads `names` below; dig/income read `info`
-  try {
-    switch (type) {
-      case "ABILITY": {
-        // No "→ target": broadcastAbility defaults targetX/Y to the caster's *attack-enemy*, so a
-        // self/ally effect (Grass Heal, Supercharge, a buff/heal ability…) would render "→ enemy". The
-        // real targets are carried correctly by the POKEMON_DAMAGE (victim) / POKEMON_HEAL (recipient)
-        // rows, so the cast row just says who cast what. (See the header note.)
-        const o = p as { skill?: string; positionX?: number; positionY?: number }
-        const skill = prettyName(o?.skill)
-        const head = names?.caster ? `${prettyName(names.caster)} · ${skill}` : skill
-        return names?.caster || o?.positionX == null ? head : `${head} @(${o.positionX},${o.positionY})`
-      }
-      case "POKEMON_DAMAGE": {
-        const o = p as { index?: string; amount?: number; type?: number; x?: number; y?: number }
-        const src = o?.index ? PkmByIndex[o.index] : undefined
-        const tgt = names?.target ? prettyName(names.target) : `(${o?.x},${o?.y})`
-        return `${src ? prettyName(src) : "?"} ${o?.amount ?? "?"} ${DMG_TYPE[o?.type ?? 0] ?? ""} → ${tgt}`
-      }
-      case "POKEMON_HEAL": {
-        const o = p as { index?: string; amount?: number; type?: number; x?: number; y?: number }
-        const src = o?.index ? PkmByIndex[o.index] : undefined
-        const tgt = names?.target ? prettyName(names.target) : `(${o?.x},${o?.y})`
-        return `${src ? prettyName(src) : "?"} +${o?.amount ?? "?"}${o?.type === 0 ? " shield" : ""} → ${tgt}`
-      }
-      case "BOARD_EVENT": {
-        const o = p as { effect?: string; x?: number; y?: number }
-        return `${prettyName(o?.effect)} at (${o?.x},${o?.y})`
-      }
-      case "DISPLAY_TEXT": {
-        // DisplayText (app/types/strings/DisplayText.ts) is either `ability.<ABILITY>` (a big ability
-        // cast, e.g. Mimic/Metronome copies) or a snake_case status ("belly_full", "full"…). Strip the
-        // "ability." prefix; prettyName title-cases the rest either way → "Meteor Mash" / "Belly Full".
-        const o = p as { text?: string }
-        const t = String(o?.text ?? "")
-        return prettyName(t.startsWith("ability.") ? t.slice("ability.".length) : t)
-      }
-      case "PLAYER_DAMAGE": return `${typeof p === "number" ? p : (p as { value?: number })?.value ?? "?"} life lost`
-      case "PLAYER_INCOME": {
-        const total = typeof p === "number" ? p : (p as { value?: number })?.value
-        if (total == null) return "+? gold"
-        const b = info?.income
-        if (b) {
-          // The income breakdown (base = 5 + red-scale bonus, interest, win-streak bonus). Show only the
-          // components that contributed; base is always present.
-          const parts = [`${b.base} base`]
-          if (b.interest) parts.push(`${b.interest} interest`)
-          if (b.streak) parts.push(`${b.streak} streak`)
-          return `+${total}g (${parts.join(" + ")})`
-        }
-        return `+${total}g`
-      }
-      case "FINAL_RANK": return `placed #${typeof p === "number" ? p : (p as { value?: number })?.value ?? "?"}`
-      case "PRELOAD_MAPS": return Array.isArray(payload) ? `${payload.length} region maps` : ""
-      case "LOADING_COMPLETE": return "game start"
-      case "GAME_END": return "game over"
-      case "COOK": { const o = p as { dishes?: string[] }; return Array.isArray(o?.dishes) && o.dishes.length ? `cooked ${o.dishes.map(prettyName).join(", ")}` : "cooked a dish" }
-      case "DIG": {
-        const o = p as { buriedItem?: string | null }
-        const found = o?.buriedItem ? `, found ${prettyName(o.buriedItem)}` : ""
-        const d = info?.dig
-        if (d) return `Dug (${d.x},${d.y}) to depth ${d.depth}${found}`
-        return o?.buriedItem ? `Dug up ${prettyName(o.buriedItem)}` : "Dug a hole"
-      }
-      case "NPC_DIALOG": { const o = p as { npc?: string; dialog?: string }; return `${prettyName(o?.npc)}: ${o?.dialog ?? ""}`.trim() }
-      case "SHOW_EMOTE": return "emote"
-      default: return ""
-    }
-  } catch {
-    return ""
-  }
-}
+// Row CONTENT is now localized at render time by replay-event-format (formatMessageRow for the ROOM_DATA
+// message rows; formatReplayEvent for the per-player / elimination / combat-scan rows). The index emits
+// STRUCTURED descriptors instead of English labels, so word order + plurals live in the per-language
+// `replay.eventlog.row.*` templates and game-data nouns route through the game's own locale keys. The two
+// remaining English facets are intentional: the raw `type` column (a stable event-type tag, like a log
+// level) and the non-combat sub-filter chip tokens (BUY / CRAFT / … — type identifiers, not prose).
 
 function loadFilters(): Record<Category, boolean> {
   try {
@@ -557,18 +473,18 @@ export default function ReplayEventLog({
       if (f.kind === "message" && !foreign.has(i)) {
         const type = String(f.type)
         const info: FrameInfo = { ...index?.combatUnits?.[i], dig: index?.digInfo?.[i], income: index?.incomeInfo?.[i] }
-        out.push({ t: f.t, frame: i, type, summary: summarize(type, f.payload, info), cat: CATEGORY_OF[type] ?? "engine", kind: "msg", uid: info.owner ?? viewerUid })
+        out.push({ t: f.t, frame: i, type, summary: formatMessageRow(t, type, f.payload, info), cat: CATEGORY_OF[type] ?? "engine", kind: "msg", uid: info.owner ?? viewerUid })
       }
     })
     // Game-level milestones (phase / elimination) carry no uid → they always show.
-    index?.segments.forEach((s) => out.push({ t: s.t, frame: -1, type: "PHASE", summary: `Stage ${s.stage} · ${s.phaseLabel}`, cat: "flow", kind: "phase" }))
-    index?.events.filter((e) => e.type === "elimination").forEach((e) => out.push({ t: e.t, frame: -1, type: "ELIMINATION", summary: e.label, cat: "flow", kind: "elim" }))
+    index?.segments.forEach((s) => out.push({ t: s.t, frame: -1, type: "PHASE", summary: t("replay.eventlog.row.phase", { stage: s.stage, phase: phaseWord(t, s.phaseLabel) }), cat: "flow", kind: "phase" }))
+    index?.events.filter((e) => e.type === "elimination").forEach((e) => out.push({ t: e.t, frame: -1, type: "ELIMINATION", summary: formatReplayEvent(t, e), cat: "flow", kind: "elim" }))
     // Per-player actions → categories: shop/board management to Economy, synergy-driven gains to Synergy,
     // proposition picks to Match flow, combat status/stat to Status/Stats. The action's own uid carries the
     // owning player (uid-less = the game-level town/rule rows); the per-player filter slices on it.
-    index?.actions.forEach((a) => out.push({ t: a.t, frame: -1, type: a.type.toUpperCase(), summary: a.label, cat: ACTION_CAT[a.type] ?? "economy", kind: a.type === "pick" ? "pick" : "action", uid: a.uid, key: a.key }))
+    index?.actions.forEach((a) => out.push({ t: a.t, frame: -1, type: a.type.toUpperCase(), summary: formatReplayEvent(t, a), cat: ACTION_CAT[a.type] ?? "economy", kind: a.type === "pick" ? "pick" : "action", uid: a.uid, key: a.key }))
     return out.sort((a, b) => a.t - b.t || a.frame - b.frame)
-  }, [room, index, viewerUid])
+  }, [room, index, viewerUid, t])
 
   // Sub-types present per category, projected through the per-player filter → drives the category chips
   // AND the per-category drill-down. Counting only rows visible under the current `playerOn` selection
@@ -779,11 +695,15 @@ export default function ReplayEventLog({
                       renderSubchip(
                         sec.cat,
                         sub,
-                        sec.cat === "combat" && COMBAT_SUBKEY[sub]
-                          ? t(`replay.eventlog.sub.${COMBAT_SUBKEY[sub]}`)
-                          : sec.cat === "combat"
-                            ? prettyName(sub)
-                            : sub
+                        // status/stats sub-keys are stable field names (burn / speed) → localized chip
+                        // label; combat-message sub-keys use the replay.* sub-key (else prettyName).
+                        sec.cat === "status"
+                          ? statusLabel(t, sub)
+                          : sec.cat === "stats"
+                            ? statLabel(t, sub)
+                            : COMBAT_SUBKEY[sub]
+                              ? t(`replay.eventlog.sub.${COMBAT_SUBKEY[sub]}`)
+                              : prettyName(sub)
                       )
                     )}
                   </Fragment>

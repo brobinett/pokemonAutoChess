@@ -5,6 +5,9 @@
 // status + stats are synced @type fields on each PokemonEntity, so they're recoverable for EVERY board
 // in the capture (the simulations map has no @view), owner-tagged. Cast/damage/heal are NOT here — those
 // are broadcastToSpectators messages, present only for the recorder's own fight (the single-POV gap).
+//
+// Type-only import (erased at runtime, so this module stays game-import-free): the structured args shape.
+import type { ReplayEventArgs } from "./replay-event-format"
 
 // PAC enum values are SCREAMING_SNAKE (Pkm.SWINUB = "SWINUB", Ability.ICE_SPINNER); render them as
 // "Swinub" / "Ice Spinner". Derived from the value, so it survives a submodule bump (no i18n dep). Lives
@@ -30,17 +33,14 @@ export const STATUS_FIELDS = [
   "curseWeakness", "curseTorment", "curseFate", "enraged", "skydiving", "tree"
 ] as const
 // Every numeric stat, including hp/pp/shield (NOT duplicates of damage/heal — a POKEMON_DAMAGE can come
-// off shield OR hp and doesn't say which, and pp/cast-charge has no other event).
+// off shield OR hp and doesn't say which, and pp/cast-charge has no other event). The localized stat
+// label lives in replay-event-format (statLabel, via the game's stat.* keys).
 export const STAT_FIELDS = [
   "atk", "def", "speDef", "ap", "speed", "range", "critChance", "critPower",
   "luck", "maxHP", "maxPP", "hp", "pp", "shield"
 ] as const
-export const STAT_LABEL: Record<string, string> = {
-  atk: "ATK", def: "DEF", speDef: "Sp.DEF", ap: "AP", speed: "Speed",
-  range: "Range", critChance: "Crit%", critPower: "Crit Pow", luck: "Luck",
-  maxHP: "Max HP", maxPP: "Max PP", hp: "HP", pp: "PP", shield: "Shield"
-}
 // camelCase status field → readable label ("armorReduction" → "Armor Reduction"; poisonStacks inline).
+// Used as the English fallback for the ~11 combat-internal status flags with no status.* locale key.
 export const statusName = (k: string): string => {
   const s = k.replace(/([a-z])([A-Z])/g, "$1 $2")
   return s.charAt(0).toUpperCase() + s.slice(1)
@@ -54,11 +54,13 @@ export interface EntitySnap {
 }
 
 // A status/stat change row. Structurally a subset of ReplayEvent (type ⊂ ReplayEventType, key always
-// set) so it pushes straight into the index's actions[] without a conversion.
+// set) so it pushes straight into the index's actions[] without a conversion. Carries STRUCTURED args
+// (raw field name + values) — the localized line is built at render time by formatReplayEvent. `key` is
+// the stable field-name token the sub-filter groups by (its localized chip label = statusLabel/statLabel).
 export interface CombatScanEvent {
   t: number
   type: "status" | "stat"
-  label: string
+  a: ReplayEventArgs
   uid?: string
   key: string
 }
@@ -70,7 +72,8 @@ type CombatSink = { push: (e: CombatScanEvent) => void }
 
 // Diff one combat entity vs its previous snapshot; push the status flips (false→true / poison ↑) and
 // stat changes (tagged `ownerUid`) into `out`, and return the new snapshot for the caller to store.
-// `name` is the already-prettified unit name. Logic is identical to the original inline POV scan.
+// `name` is the raw pokemon enum value (the formatter localizes it via pkm.*). Logic is identical to the
+// original inline POV scan.
 export function scanCombatEntity(
   e: Record<string, unknown>,
   prev: EntitySnap | undefined,
@@ -91,9 +94,9 @@ export function scanCombatEntity(
     // resurrection) before the first sync — those are fight-start baselines, not in-combat applications.
     if (k === "poisonStacks") {
       if (typeof cur === "number" && cur > 0 && was != null && cur !== was)
-        out.push({ t, type: "status", label: `${name} · Poisoned (${cur})`, uid: ownerUid, key: "Poison" })
+        out.push({ t, type: "status", a: { unit: name, field: k, count: cur }, uid: ownerUid, key: k })
     } else if (cur === true && was != null && was !== true) {
-      out.push({ t, type: "status", label: `${name} · ${statusName(k)}`, uid: ownerUid, key: statusName(k) })
+      out.push({ t, type: "status", a: { unit: name, field: k }, uid: ownerUid, key: k })
     }
   }
   const statsSnap: Record<string, number> = {}
@@ -104,7 +107,7 @@ export function scanCombatEntity(
     const was = prev?.stats?.[k]
     if (was != null && cur !== was) {
       const d = cur - was
-      out.push({ t, type: "stat", label: `${name} ${STAT_LABEL[k]} ${d > 0 ? "+" : ""}${d}`, uid: ownerUid, key: STAT_LABEL[k] })
+      out.push({ t, type: "stat", a: { unit: name, field: k, delta: d }, uid: ownerUid, key: k })
     }
   }
   return { status: statusSnap, stats: statsSnap }
@@ -155,7 +158,9 @@ export function scanFrameCombat(
     const prevMap = prev
     const scanTeam = (team: TeamSchema | undefined, owner: string) => {
       team?.forEach?.((e, id) => {
-        const nm = prettyName((e.name as string) ?? "")
+        // raw pokemon enum value — the formatter localizes it via pkm.* (which also corrects misspelled
+        // enum names, e.g. Pkm.FLAFFY → "Flaaffy", that prettyName would render literally as "Flaffy").
+        const nm = (e.name as string) ?? ""
         prevMap.set(id, scanCombatEntity(e, prevMap.get(id), t, nm, owner, out))
       })
     }

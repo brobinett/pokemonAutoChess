@@ -13,6 +13,7 @@ import { Pkm, PkmDuos } from "../../../types/enum/Pokemon"
 import type { Synergy } from "../../../types/enum/Synergy"
 import type { ReplayFrame } from "./replay-room"
 import { type CombatFrameState, type EntitySnap, prettyName, scanFrameCombat } from "./replay-combat-scan"
+import type { PickOption, ReplayEventArgs } from "./replay-event-format"
 
 // prettyName lives in replay-combat-scan (so the lean foreign-combat worker can reuse it); re-export it
 // here for the existing callers (the event-log component imports it from this module).
@@ -114,29 +115,17 @@ function evolvesTo(base: string, evolved: string): boolean {
 }
 
 // Every PvE opponent name a round can store (PVEStages[*].name) — both "pkm.<SPECIES>" and the
-// snake_case boss encounters ("tower_duo", "legendary_birds", …). Used to prettify those vs. leaving a
-// PvP display name untouched. Derived from source so a new PvE boss is covered without an edit here.
+// snake_case boss encounters ("tower_duo", "legendary_birds", …). A round event carries this name + an
+// `isPvE` flag; the formatter localizes a PvE name (it IS a locale key) and leaves a PvP display name
+// verbatim. Derived from source so a new PvE boss is covered without an edit here.
 const PVE_OPPONENT_NAMES = new Set<string>(Object.values(PVEStages).map((s) => s.name))
 
-// Round outcome label. `name` is the opponent: a PvE round stores an i18n key like "pkm.MAGIKARP" or a
-// boss key like "legendary_birds" (prettify both → "Magikarp" / "Legendary Birds"); a PvP round stores
-// the player's display name (use as-is — prettifying would mangle mixed-case names).
-function roundLabel(result: string, name: string, shiny: boolean): string {
-  let opp: string
-  const isPvE = name?.startsWith("pkm.") || PVE_OPPONENT_NAMES.has(name)
-  if (name?.startsWith("pkm.")) opp = prettyName(name.slice(4))
-  else if (PVE_OPPONENT_NAMES.has(name)) opp = prettyName(name)
-  else opp = name || "opponent"
-  // A shiny PvE encounter (state.shinyEncounter — Celebi/Shiny Hunter) just modifies the opponent name.
-  if (isPvE && shiny) opp = `Shiny ${opp}`
-  if (result === BattleResult.WIN) return `Beat ${opp}`
-  if (result === BattleResult.DEFEAT) return `Lost to ${opp}`
-  return `Draw vs ${opp}`
-}
 export interface ReplayEvent {
   t: number // absolute ms
   type: ReplayEventType
-  label: string
+  // Structured args for the render-time formatter (replaces the old pre-built English `label`): raw
+  // game-data enum values + numbers, localized by formatReplayEvent. Absent for events with no params.
+  a?: ReplayEventArgs
   uid?: string
   // Optional sub-type within the event's category, for the fine-grained filter — the stat field
   // ("Speed", "Shield") or status name ("Burn") for the stat/status firehose, which otherwise collapse
@@ -181,53 +170,21 @@ export interface ReplayIndex {
   foreignFrames: number[]
 }
 
-// DungeonPMDO values (player.map) are PascalCase with trailing digits ("AmpPlains", "BuriedRelic1",
-// "DarkIceMountainPeak"); render them as the game's region label by splitting on case/letter-digit
-// boundaries — exactly what the `t("map.<value>")` English strings are ("Amp Plains", "Buried Relic 1").
-// Derived from the value, so no i18n dep (matching these English event labels; i18n is a later pass).
-// The split matches the locale for all but 6 legacy keys the locale renames — the *Unused* maps are
-// live portal destinations under PMDO names (see CLAUDE.md) plus WorldAbyss2 → "World Abyss"; override
-// those to their player-facing `map.*` strings so all 143 maps match what the game shows.
-const REGION_NAME_OVERRIDES: Record<string, string> = {
-  QuicksandUnused: "Lost Quicksand",
-  TemporalUnused: "Temporal Tower 2",
-  UnusedBrineCave: "Brine Cave 2",
-  UnusedSteamCave: "Steam Cave 2",
-  UnusedWaterfallPond: "Waterfall Pond 2",
-  WorldAbyss2: "World Abyss"
-}
-const regionName = (map: string): string =>
-  REGION_NAME_OVERRIDES[map] ??
-  map.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Za-z])(\d)/g, "$1 $2")
-
-// Weather enum values are single tokens (RAIN → "Rain") except BLOODMOON, which the game labels "Blood
-// Moon" (matches the `t("weather.*")` strings).
-const weatherName = (w: string): string =>
-  w === "BLOODMOON" ? "Blood Moon" : prettyName(w)
-
-// All-boards combat status/stat diff lives in scanFrameCombat (replay-combat-scan.ts); the build loop
-// below calls it once per state frame to emit owner-tagged status/stat events for every simulation.
+// Region (player.map), weather, and gold deltas were formerly stringified here (regionName / weatherName /
+// goldStr); they now emit raw values in the event args and the formatter localizes them via the game's
+// map.* / weather.* keys (the map.* keys even cover the *Unused legacy renames, so the old override table
+// is gone). All-boards combat status/stat diff lives in scanFrameCombat (replay-combat-scan.ts); the build
+// loop below calls it once per state frame to emit owner-tagged status/stat events for every simulation.
 
 const b64ToBytes = (b64: string): Uint8Array =>
   Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
 
 // A proposition entry (player.choices[].pokemons) is a PkmProposition = Pkm | PkmDuo. A duo (e.g.
 // Latios+Latias) resolves to TWO Pokémon that both land on the board (PkmDuos), so expand it to its
-// constituents — both to MATCH the chosen entry against the board units that appeared, and to render
-// it ("Latios + Latias"). A plain Pkm is its own single constituent.
+// constituents — both to MATCH the chosen entry against the board units that appeared, and to render it
+// (the formatter joins them "Latios + Latias"). A plain Pkm is its own single constituent.
 const propositionConstituents = (p: string): string[] =>
   p in PkmDuos ? [...PkmDuos[p as keyof typeof PkmDuos]] : [p]
-const prettyProposition = (p: string): string =>
-  propositionConstituents(p).map(prettyName).join(" + ")
-
-// "Picked X over Y, Z" — what was chosen and the options passed up. Falls back to just "Picked X" for
-// a single-option slate (shouldn't happen for a real proposition, but stays graceful).
-function pickedOverLabel(chosen: string, alternatives: string[]): string {
-  return alternatives.length ? `Picked ${chosen} over ${alternatives.join(", ")}` : `Picked ${chosen}`
-}
-
-// Signed gold delta with the in-game "g" unit, e.g. "+2g" / "-3g".
-const goldStr = (n: number): string => `${n > 0 ? "+" : ""}${n}g`
 
 // The full slate of a player.choices entry, snapshotted per frame so that when a choice is resolved
 // (it leaves player.choices the frame the player picks) we can recover the options that were offered.
@@ -362,9 +319,9 @@ function derivePlayerStateEvents(
   p: Player,
   prev: PlayerSnapshot | undefined,
   ctx: DeriveCtx
-): { events: { t: number; type: ReplayEventType; label: string }[]; snap: PlayerSnapshot } {
-  const events: { t: number; type: ReplayEventType; label: string }[] = []
-  const push = (type: ReplayEventType, label: string) => events.push({ t: ctx.t, type, label })
+): { events: { t: number; type: ReplayEventType; a: ReplayEventArgs }[]; snap: PlayerSnapshot } {
+  const events: { t: number; type: ReplayEventType; a: ReplayEventArgs }[] = []
+  const push = (type: ReplayEventType, a: ReplayEventArgs) => events.push({ t: ctx.t, type, a })
 
   // --- current-frame reads (needed for the snapshot regardless of prev) ---
   const money = p.money
@@ -414,9 +371,9 @@ function derivePlayerStateEvents(
 
   if (prev) {
     // Region change — player.map is set to the portal's destination when one is taken.
-    if (prev.map !== undefined && map && map !== prev.map) push("region", `Entered ${regionName(map)}`)
+    if (prev.map !== undefined && map && map !== prev.map) push("region", { map })
     // Normal-synergy scarf craft: scarvesItems grows (lands outside player.items, so the item diffs miss it).
-    for (const x of multisetDiff(prev.scarves, scarves).added) push("artifact", `Scarf → ${prettyName(x)}`)
+    for (const x of multisetDiff(prev.scarves, scarves).added) push("artifact", { item: x })
 
     // Choices resolved this frame: present last frame, gone now (the player picked → left player.choices).
     // Their snapshotted slate is what the pick was made FROM. Auto-pick on timeout can resolve several.
@@ -434,7 +391,9 @@ function derivePlayerStateEvents(
       // A pokemon proposition resolved this frame: match the chosen entry against the units that appeared
       // (a duo adds both) so we can show what it was picked OVER. null if we can't match it to a board add.
       const pokeSlate = resolved.find((s) => s.pokemons.length > 0)
-      let pokePickLabel: string | null = null
+      // Structured pick options (the chosen + the alternatives), formatted at render. Each option is its
+      // constituent pokemon (a duo → both) plus the optional item shown in parens.
+      let pokePick: { options: PickOption[]; chosenIdx: number } | null = null
       if (pokeSlate) {
         const addedNames = new Set(added.map(([, n]) => n))
         const chosenIdx = pokeSlate.pokemons.findIndex((pp) =>
@@ -442,12 +401,11 @@ function derivePlayerStateEvents(
         )
         if (chosenIdx >= 0) {
           const withItems = pokeSlate.items.length > 0
-          const opt = (i: number) => {
-            const item = withItems && pokeSlate.items[i] ? ` (${prettyName(pokeSlate.items[i])})` : ""
-            return `${prettyProposition(pokeSlate.pokemons[i])}${item}`
-          }
-          const alts = pokeSlate.pokemons.map((_, i) => i).filter((i) => i !== chosenIdx).map(opt)
-          pokePickLabel = alts.length ? `Picked ${opt(chosenIdx)} over ${alts.join(", ")}` : `Picked ${opt(chosenIdx)}`
+          const options: PickOption[] = pokeSlate.pokemons.map((pp, i) => ({
+            pkms: propositionConstituents(pp),
+            ...(withItems && pokeSlate.items[i] ? { item: pokeSlate.items[i] } : {})
+          }))
+          pokePick = { options, chosenIdx }
           if (withItems && pokeSlate.items[chosenIdx]) combinedPickItem = pokeSlate.items[chosenIdx]
         }
       }
@@ -464,7 +422,7 @@ function derivePlayerStateEvents(
       // combine). Detected independently of the shop branch — a 3-combine on BUY emits both a buy and an evolve.
       if (added.length && removed.length) {
         if (removed.some(([, n]) => n === Pkm.EGG)) {
-          push("hatch", `Hatched ${prettyName(added[0][1])}`)
+          push("hatch", { pkm: added[0][1] })
         } else {
           let pair: [string, string] | undefined
           for (const [, ev] of added) {
@@ -480,43 +438,43 @@ function derivePlayerStateEvents(
             const combinedBase = [...counts].find(([, n]) => n >= 2)?.[0]
             if (combinedBase) pair = [combinedBase, added[0][1]]
           }
-          if (pair) push("evolve", `${prettyName(pair[0])} → ${prettyName(pair[1])}`)
+          if (pair) push("evolve", { from: pair[0], to: pair[1] })
         }
       }
 
       // Priority so one underlying SHOP action emits one event. (Buy/remove/reroll need the shop → POV only.)
       if (emptied.length) {
         const kind = boardChanged ? "buy" : "remove"
-        emptied.forEach((name) =>
-          push(kind, `${prettyName(name)}${kind === "buy" && emptied.length === 1 && dMoney < 0 ? ` (${goldStr(dMoney)})` : ""}`)
-        )
+        emptied.forEach((name) => {
+          const withGold = kind === "buy" && emptied.length === 1 && dMoney < 0
+          push(kind, withGold ? { pkm: name, gold: dMoney } : { pkm: name })
+        })
       } else if (choiceResolved && added.length) {
-        push("pick", pokePickLabel ?? `Picked ${prettyName(added[0][1])}`)
+        push("pick", pokePick ?? { options: [{ pkms: [added[0][1]] }], chosenIdx: 0 })
       } else if (removed.length && !added.length && removed.length <= 3 && p.alive !== false) {
         // Sell — structural (a board unit leaves with no add and no shop-slot buy), mode-independent.
-        push("sell", `${prettyName(removed[0][1])}${dMoney > 0 ? ` (${goldStr(dMoney)})` : ""}`)
+        push("sell", dMoney > 0 ? { pkm: removed[0][1], gold: dMoney } : { pkm: removed[0][1] })
       } else if (!boardChanged && refreshed >= REROLL_MIN_REFRESHED_SLOTS) {
-        push("reroll", dMoney < 0 ? `Reroll (${goldStr(dMoney)})` : "Shop refresh")
+        push("reroll", dMoney < 0 ? { gold: dMoney } : {})
       } else if (dMoney === -levelUpCost && !boardChanged && emptied.length === 0 && refreshed === 0) {
-        push("xp", `Bought 4 XP (${goldStr(dMoney)})`)
+        push("xp", { amount: 4, gold: dMoney })
       } else if (added.length && !removed.length) {
         // A unit appeared with no buy/pick/evolution behind it: Baby egg, Water fish, or a free gain. (For a
         // non-POV player a real buy lands here too — we can't see the shop — so it reads as "Gained".)
         for (const [id, name] of added) {
           if (name === Pkm.EGG) {
             const egg = p.board.get(id) as { evolution?: string; shiny?: boolean } | undefined
-            const hatch = egg?.evolution && egg.evolution !== Pkm.DEFAULT ? prettyName(egg.evolution) : ""
-            const golden = egg?.shiny ? "golden " : ""
-            push("egg", hatch ? `Laid ${golden}${hatch} egg` : "Laid an egg")
+            const hatchPkm = egg?.evolution && egg.evolution !== Pkm.DEFAULT ? egg.evolution : ""
+            push("egg", hatchPkm ? { pkm: hatchPkm, golden: !!egg?.shiny } : {})
           } else if (p.board.get(id)?.action === PokemonActionState.FISH) {
-            push("fish", `Fished ${prettyName(name)}`)
+            push("fish", { pkm: name })
           } else {
-            push("gained", `Gained ${prettyName(name)}`)
+            push("gained", { pkm: name })
           }
         }
       }
       if (typeof level === "number" && typeof prev.level === "number" && level > prev.level) {
-        push("level", `→ ${level}`)
+        push("level", { level })
       }
     }
 
@@ -524,7 +482,13 @@ function derivePlayerStateEvents(
     if (p.history && historyLen > prev.historyLen) {
       for (let h = prev.historyLen; h < historyLen; h++) {
         const hi = p.history.at(h)
-        if (hi) push("round", roundLabel(hi.result, hi.name, ctx.shinyEncounter))
+        if (!hi) continue
+        // PvE opponent names are locale keys ("pkm.MAGIKARP" / boss keys); PvP names are display names —
+        // the formatter localizes the former and leaves the latter verbatim (isPvE distinguishes). result
+        // is normalized to a stable token so the formatter needn't import BattleResult.
+        const isPvE = hi.name?.startsWith("pkm.") || PVE_OPPONENT_NAMES.has(hi.name)
+        const result = hi.result === BattleResult.WIN ? "win" : hi.result === BattleResult.DEFEAT ? "loss" : "draw"
+        push("round", { result, opponent: hi.name, isPvE: !!isPvE, shiny: ctx.shinyEncounter })
       }
     }
 
@@ -538,7 +502,8 @@ function derivePlayerStateEvents(
       const uLost: UnitDelta[] = []
       const ids = new Set<string>([...prev.unitItems.keys(), ...unitItems.keys()])
       for (const id of ids) {
-        const name = prettyName(board.get(id) ?? prev.board.get(id) ?? "")
+        // raw pokemon enum value (the formatter localizes it via pkm.*); was prettified here pre-i18n
+        const name = board.get(id) ?? prev.board.get(id) ?? ""
         const present = board.has(id)
         const d = multisetDiff(prev.unitItems.get(id) ?? [], unitItems.get(id) ?? [])
         for (const it of d.added) uGained.push({ id, name, item: it, present })
@@ -566,7 +531,9 @@ function derivePlayerStateEvents(
           const chosen = itemSlate.items.find((it) => pAdded.includes(it))
           if (chosen) {
             takeStr(pAdded, chosen)
-            push("pick", pickedOverLabel(prettyName(chosen), itemSlate.items.filter((it) => it !== chosen).map(prettyName)))
+            // item-only proposition: chosen first (chosenIdx 0), then the alternatives — each an item option.
+            const options: PickOption[] = [chosen, ...itemSlate.items.filter((it) => it !== chosen)].map((it) => ({ item: it }))
+            push("pick", { options, chosenIdx: 0 })
           }
         }
       }
@@ -582,7 +549,7 @@ function derivePlayerStateEvents(
         if (!pRemoved.includes(C)) continue
         takeStr(pRemoved, C)
         takeUnit(uLost, (u) => u === lostD)
-        push("craft", `${prettyName(recipe[0])} + ${prettyName(recipe[1])} → ${prettyName(R)} on ${uGained[g].name}`)
+        push("craft", { c0: recipe[0], c1: recipe[1], result: R, unit: uGained[g].name })
         uGained.splice(g, 1)
       }
 
@@ -597,7 +564,7 @@ function derivePlayerStateEvents(
         if (rest.indexOf(recipe[1]) < 0) continue
         pRemoved.splice(pRemoved.indexOf(recipe[0]), 1)
         pRemoved.splice(pRemoved.indexOf(recipe[1]), 1)
-        push("craft", `${prettyName(recipe[0])} + ${prettyName(recipe[1])} → ${prettyName(pAdded[a])}`)
+        push("craft", { c0: recipe[0], c1: recipe[1], result: pAdded[a] })
         pAdded.splice(a, 1)
       }
 
@@ -605,7 +572,7 @@ function derivePlayerStateEvents(
       for (let i = pRemoved.length - 1; i >= 0; i--) {
         const u = takeUnit(uGained, (g) => g.item === pRemoved[i])
         if (u) {
-          push("equip", `Equipped ${prettyName(pRemoved[i])} on ${u.name}`)
+          push("equip", { item: pRemoved[i], unit: u.name })
           pRemoved.splice(i, 1)
         }
       }
@@ -615,9 +582,9 @@ function derivePlayerStateEvents(
       for (const x of pAdded) {
         const u = takeUnit(uLost, (l) => l.item === x)
         if (u) {
-          if (u.present) push("unequip", `Unequipped ${prettyName(x)} from ${u.name}`)
+          if (u.present) push("unequip", { item: x, unit: u.name })
         } else {
-          push("item", `Got ${prettyName(x)}`)
+          push("item", { item: x })
         }
       }
     }
@@ -626,7 +593,7 @@ function derivePlayerStateEvents(
     unitPos.forEach((pos, id) => {
       const prv = prev.unitPos.get(id)
       if (prv && (prv.x !== pos.x || prv.y !== pos.y)) {
-        push("move", `${prettyName(board.get(id) ?? "")} → (${pos.x},${pos.y})`)
+        push("move", { pkm: board.get(id) ?? "", x: pos.x, y: pos.y })
       }
     })
 
@@ -635,32 +602,32 @@ function derivePlayerStateEvents(
       const prv = prev.synSteps.get(syn) ?? 0
       if (step > prv) {
         const triggers = SynergyTriggers[syn as Synergy] ?? []
-        for (let s = prv; s < step; s++) push("synergy", `${prettyName(syn)} ${triggers[s]}`)
+        for (let s = prv; s < step; s++) push("synergy", { synergy: syn, count: triggers[s] })
       }
     })
 
-    // Grass — a berry tree ripened (stage reached 3). berryTypes[i] names the berry.
+    // Grass — a berry tree ripened (stage reached 3). berryTypes[i] names the berry (an item.* key).
     for (let i = 0; i < berryStages.length; i++) {
       if ((prev.berryStages[i] ?? 0) < 3 && (berryStages[i] ?? 0) >= 3) {
-        push("berry", `${prettyName(berryTypes[i] ?? "Berry")} ripe`)
+        push("berry", { berry: berryTypes[i] ?? "" })
       }
     }
     // Berry-tree species set — repopulates on each portal (so this fires alongside a region change).
     if (species.length > 0 && species.join() !== prev.berryTypes.join()) {
-      push("berries", `Berry trees: ${species.map((b) => prettyName(b).replace(" Berry", "")).join(", ")}`)
+      push("berries", { list: species })
     }
 
     // Flora — a flower in a pot evolved in place (mulch-fed).
     for (let i = 0; i < flowers.length; i++) {
       const prv = prev.flowers[i]
       if (prv && flowers[i] && prv !== flowers[i] && evolvesTo(prv, flowers[i])) {
-        push("flower", `Flower → ${prettyName(flowers[i])}`)
+        push("flower", { flower: flowers[i] })
       }
     }
 
     // Wanderer — a catchable pokemon appeared (player.wanderers gains a fresh-uuid entry).
     wandererIds.forEach((id) => {
-      if (!prev.wandererIds.has(id)) push("wanderer", `Wandering ${prettyName(wandererPkm.get(id) ?? "")}`)
+      if (!prev.wandererIds.has(id)) push("wanderer", { pkm: wandererPkm.get(id) ?? "" })
     })
   }
 
@@ -837,14 +804,14 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     // land in player state separately (items / money / etc.), captured by those diffs.
     const te = (state as { townEncounter?: string | null }).townEncounter ?? null
     if (prevTownEncounter !== undefined && te && te !== prevTownEncounter) {
-      actions.push({ t: f.t, type: "town", label: `Town: ${prettyName(te)}` })
+      actions.push({ t: f.t, type: "town", a: { npc: te } })
     }
     prevTownEncounter = te
 
     // Special game rule (scribble modes) — set once at game start, never changes; log its first sighting.
     const rule = (state as { specialGameRule?: string | null }).specialGameRule ?? null
     if (rule && rule !== prevRule) {
-      actions.push({ t: f.t, type: "rule", label: `Special rule: ${prettyName(rule)}` })
+      actions.push({ t: f.t, type: "rule", a: { rule } })
     }
     prevRule = rule
 
@@ -854,7 +821,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       if (typeof life !== "number") return
       if (isElimination(lifePrev.get(uid), life) && !eliminated.has(uid)) {
         eliminated.add(uid)
-        events.push({ t: f.t, type: "elimination", uid, label: `${p.name} eliminated` })
+        events.push({ t: f.t, type: "elimination", uid, a: { player: p.name } })
       }
       lifePrev.set(uid, life)
     })
@@ -889,7 +856,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       prevWeatherBySim.set(simId, weather)
       for (const owner of [sim.bluePlayerId, sim.redPlayerId]) {
         if (owner && state.players?.get(owner)?.simulationId === simId)
-          actions.push({ t: f.t, type: "weather", label: `Weather: ${weatherName(weather)}`, uid: owner })
+          actions.push({ t: f.t, type: "weather", a: { weather }, uid: owner })
       }
     })
 
@@ -910,7 +877,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     }
     state.players?.forEach((p, uid) => {
       const { events: playerEvents, snap } = derivePlayerStateEvents(p, prevByPlayer.get(uid), deriveCtx)
-      for (const e of playerEvents) actions.push({ t: e.t, type: e.type, label: e.label, uid })
+      for (const e of playerEvents) actions.push({ t: e.t, type: e.type, a: e.a, uid })
       prevByPlayer.set(uid, snap)
     })
   }
