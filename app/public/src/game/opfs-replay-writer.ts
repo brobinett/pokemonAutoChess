@@ -1,4 +1,4 @@
-import { encodeFrameV1, encodeHeaderV1 } from "./replay-format"
+import { encodeFrameV1, encodeHeaderV1, encodeReplayTrailer, type ReplaySummary } from "./replay-format"
 import type { ReplayFrame, ReplayManifest } from "./replay-room"
 
 // Streams a v1 binary `.colreplay` to a file as frames arrive — the write side of the OPFS worker
@@ -123,6 +123,30 @@ export class ReplayFileWriter {
 
   flush(): void {
     this.handle.flush()
+  }
+
+  /** Append the match-summary trailer (POV final team + placement) as the file's EOF footer — called once at
+   *  close, after the last frame. Best-effort: a failure here must never lose the recording, so it's guarded
+   *  and only advances the offset on a full write (a short/failed write is rolled back so the file ends at the
+   *  last good frame, i.e. simply trailer-less). */
+  writeTrailer(summary: ReplaySummary): void {
+    const bytes = encodeReplayTrailer(summary)
+    const at = this.offset
+    try {
+      const written = this.handle.write(bytes, { at })
+      if (written !== bytes.length) {
+        this.handle.truncate?.(at) // partial footer would corrupt the tail read — drop it
+        return
+      }
+      this.offset += bytes.length
+    } catch (e) {
+      console.error("[colreplay] trailer write failed (recording kept, no summary)", e)
+      try {
+        this.handle.truncate?.(at)
+      } catch {
+        /* best effort */
+      }
+    }
   }
 
   /** Flush, then release the handle (so the file can be read for download). flush() is in a try/finally so a

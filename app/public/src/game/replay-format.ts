@@ -115,6 +115,7 @@ export function encodeReplayV1(manifest: ReplayManifest): Uint8Array<ArrayBuffer
   w.bytes(encodeHeaderV1(manifest))
   let prevT = 0 // rebased manifests open at t=0, so the first frame's tDelta is 0
   for (const f of manifest.frames) prevT = writeFrame(w, f, prevT)
+  if (manifest.summary) w.bytes(encodeReplayTrailer(manifest.summary))
   return w.done()
 }
 
@@ -172,6 +173,72 @@ export function readReplayHeader(bytes: Uint8Array): ReplayHeaderMeta | null {
   } catch {
     return null
   }
+}
+
+// ── match-summary trailer (footer at EOF) ─────────────────────────────────────────────────────────────
+// A compact per-recording summary — the POV player's final team + placement — appended AFTER the last frame
+// so the /replay library can show it WITHOUT decoding the multi-MB body: it's a FOOTER (length + magic at
+// the very end), so a small tail read locates it. Optional + back-compatible — a file written before this
+// (or any non-CLRP file) simply has no footer and readReplayTrailer returns null.
+//   layout:  [ summary JSON bytes ][ u32 summaryLen (LE) ][ TRAILER_MAGIC "CLTR" ]
+const TRAILER_MAGIC = [0x43, 0x4c, 0x54, 0x52] // "CLTR"
+const TRAILER_FOOTER_LEN = 4 + TRAILER_MAGIC.length // u32 summaryLen + magic
+
+/** One deployed unit in the POV's final board, enough to render a portrait thumbnail + tooltip. */
+export interface ReplaySummaryUnit {
+  /** Pkm enum name, for the tooltip */
+  name: string
+  /** sprite index ("0025"), for the portrait */
+  index: string
+  shiny?: boolean
+}
+
+/** The POV player's end-of-game snapshot stored in the trailer. Fields are optional/extensible — the reader
+ * tolerates a partial or future-extended summary. */
+export interface ReplaySummary {
+  /** final placement, 1 (winner) … 8 */
+  rank?: number
+  /** POV final board (deployed units), for portrait thumbnails */
+  team?: ReplaySummaryUnit[]
+  /** POV player display name */
+  name?: string
+}
+
+/** Encode the trailer footer for `summary` (append it after the last frame at close). */
+export function encodeReplayTrailer(summary: ReplaySummary): Uint8Array<ArrayBuffer> {
+  const w = new ByteWriter()
+  const body = te.encode(JSON.stringify(summary))
+  w.bytes(body)
+  w.u32(body.length)
+  for (const c of TRAILER_MAGIC) w.u8(c)
+  return w.done()
+}
+
+/** Parse the trailer FOOTER at the end of `buf` — the whole file OR just a tail slice (the footer sits at
+ * the very end either way). Returns the summary + the trailer's total byte length (so the decoder can bound
+ * the frame region) or null when there's no valid footer (old/foreign file, or the tail slice is too short
+ * to hold the whole trailer). */
+function parseTrailerFooter(buf: Uint8Array): { summary: ReplaySummary; byteLength: number } | null {
+  try {
+    const L = buf.length
+    if (L < TRAILER_FOOTER_LEN) return null
+    for (let i = 0; i < TRAILER_MAGIC.length; i++) {
+      if (buf[L - TRAILER_MAGIC.length + i] !== TRAILER_MAGIC[i]) return null
+    }
+    const lenPos = L - TRAILER_FOOTER_LEN
+    const summaryLen = (buf[lenPos] | (buf[lenPos + 1] << 8) | (buf[lenPos + 2] << 16)) + buf[lenPos + 3] * 0x1000000
+    const start = lenPos - summaryLen
+    if (summaryLen <= 0 || start < 0) return null // trailer not fully inside `buf` (tail slice too short) / corrupt
+    const summary = JSON.parse(td.decode(buf.subarray(start, lenPos))) as ReplaySummary
+    return { summary, byteLength: summaryLen + TRAILER_FOOTER_LEN }
+  } catch {
+    return null
+  }
+}
+
+/** Read the match-summary trailer from a `.colreplay` file (or its tail slice); null when absent. */
+export function readReplayTrailer(buf: Uint8Array): ReplaySummary | null {
+  return parseTrailerFooter(buf)?.summary ?? null
 }
 
 /** A detected build-skew between a recording and the viewer's running build — `kind` selects the message
@@ -324,12 +391,17 @@ export function decodeReplayV1(bytes: Uint8Array): ReplayManifest {
   const metaLen = r.u32()
   const meta = JSON.parse(td.decode(r.bytes(metaLen)))
 
+  // A match-summary trailer (footer at EOF) is not a frame — bound the frame loop to exclude it so its bytes
+  // aren't mis-parsed as a frame. Absent (old/foreign file) → framesEnd is the file end.
+  const trailer = parseTrailerFooter(bytes)
+  const framesEnd = trailer ? bytes.length - trailer.byteLength : bytes.length
+
   const frames: ReplayFrame[] = []
   let prevT = 0
   // Recover the valid PREFIX of a truncated/corrupt file (a recording cut off by a crash mid-write) rather
   // than throwing it all away: parse a frame into a local and only push it if it parsed fully (the cursor
   // stayed in bounds); on a short read or bad kind/payload, warn and stop with what was read so far.
-  while (r.pos < r.length) {
+  while (r.pos < framesEnd) {
     const frameStart = r.pos
     let frame: ReplayFrame
     let t: number
@@ -360,7 +432,7 @@ export function decodeReplayV1(bytes: Uint8Array): ReplayManifest {
     prevT = t
     frames.push(frame)
   }
-  return { ...meta, frames }
+  return { ...meta, frames, summary: trailer?.summary }
 }
 
 // ── dual-read: sniff v1-binary vs v0-JSON, return a manifest the consumers (which dual-read frames) use ─

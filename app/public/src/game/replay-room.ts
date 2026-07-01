@@ -1,6 +1,7 @@
 import { SchemaSerializer, type Room } from "@colyseus/sdk"
 import type { Iterator } from "@colyseus/schema"
 import type GameState from "../../../rooms/states/game-state"
+import type { ReplaySummary } from "./replay-format"
 
 // A ReplayRoom plays back a recorded match transcript through the EXISTING client renderer
 // without a live server. The client renders entirely from Colyseus decoder callbacks
@@ -34,6 +35,8 @@ export interface ReplayManifest {
   viewerUid: string
   recordedAt: string
   frames: ReplayFrame[]
+  /** POV final team + placement from the file's trailer (v1 footer); absent on old/foreign files. */
+  summary?: ReplaySummary
 }
 
 type Handler = (...args: any[]) => void

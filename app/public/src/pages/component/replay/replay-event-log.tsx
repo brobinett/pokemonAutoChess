@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { type FrameInfo, formatMessageRow, formatReplayEvent, phaseWord, statLabel, statusLabel } from "../../../game/replay-event-format"
 import { prettyName, type ReplayIndex } from "../../../game/replay-index"
@@ -334,14 +334,16 @@ export default function ReplayEventLog({
   // user has BOTH dragged and resized (it would never be used).
   const [autoBox, setAutoBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
   const fullyPlaced = saved.x != null && saved.w != null
-  useEffect(() => {
+  // Measure the default box SYNCHRONOUSLY before paint (useLayoutEffect, not a post-paint rAF): the HUD
+  // anchors it reads (#game-players / .replay-controls / .game-dps-meter) are already laid out when the
+  // panel mounts, so measuring here sets the box before the first paint — otherwise the panel paints once
+  // at the fallback anchor and visibly jumps to the measured spot. Re-measures on window resize too.
+  useLayoutEffect(() => {
     if (!open || fullyPlaced) return
-    // measure after layout settles (the panel + game HUD are on screen); also track window resizes
     const measure = () => setAutoBox(measureDefaultBox())
-    const id = requestAnimationFrame(measure)
+    measure()
     window.addEventListener("resize", measure)
     return () => {
-      cancelAnimationFrame(id)
       window.removeEventListener("resize", measure)
     }
   }, [open, fullyPlaced])

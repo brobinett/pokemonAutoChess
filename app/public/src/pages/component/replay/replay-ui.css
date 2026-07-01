@@ -24,7 +24,8 @@
   letter-spacing: -2px;
 }
 
-/* compact the chunky .bubbly buttons down to control-bar size */
+/* compact the chunky .bubbly buttons down to control-bar size; flex-center so the inline SVG icons (and the
+ * ±1 / ☰ text) sit centered regardless of glyph metrics */
 .replay-controls .bubbly {
   font-size: 100%;
   padding: 0.1em 0.45em 0.25em;
@@ -33,6 +34,18 @@
     inset -4px -4px 0px 0px var(--color-bg-tertiary),
     var(--shadow-clickable);
   min-width: 2.1em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* inline SVG transport icons — 1em box, inherit the button's text color (incl. the disabled dim) so they
+ * scale with each button's font-size and read as one consistent set (replaces the mismatched Unicode glyphs) */
+.replay-controls .rc-icon {
+  width: 1em;
+  height: 1em;
+  fill: currentColor;
+  display: block;
 }
 .replay-controls .bubbly.rc-play {
   font-size: 120%;
@@ -212,16 +225,20 @@
   opacity: 0.75;
 }
 
-/* Playback-speed dropdown — mirrors the bar's .bubbly buttons (bg/border/radius/inset-shadow/120% font)
- * so it reads as a sibling control, not a foreign form input; replaces the old 4-button row. */
+/* Playback-speed dropdown — mirrors the bar's .bubbly buttons (bg/border/radius/inset-shadow) so it reads
+ * as a sibling control at the SAME scale, not a larger foreign form input; replaces the old 4-button row.
+ * FIXED width so the longest label (1/8×) never widens the bar; labels are centered. */
 .replay-controls .rc-speed-select {
-  font-size: 120%;
+  font-size: 110%;
   color: #fff;
   background: var(--color-bg-secondary);
   border: var(--border-thin);
-  border-radius: 12px;
-  box-shadow: inset -6px -6px 0 0 var(--color-bg-tertiary), var(--shadow-clickable);
-  padding: 0.15em 0.5em calc(0.15em + 3px);
+  border-radius: 8px;
+  box-shadow: inset -4px -4px 0 0 var(--color-bg-tertiary), var(--shadow-clickable);
+  padding: 0.1em 0.4em 0.25em;
+  width: 4.2em;
+  text-align: center;
+  text-align-last: center;
   text-shadow: 2px 2px 2px #00000040;
   cursor: var(--cursor-hover);
   font-variant-numeric: tabular-nums;
@@ -273,6 +290,16 @@
   justify-content: center;
   background: rgba(20, 24, 33, 0.82);
 }
+/* The LANDING overlay stays vertically CENTERED (`safe center` so a card taller than the viewport top-aligns
+   instead of clipping its top). The file-pick jitter — a centered card recentering as the dropzone↔preview
+   slot changes height — is handled by a fixed min-height on that slot (see .replay-landing-left), not by
+   giving up centering. overflow/scrollbar-gutter keep a tall card scrollable without a width shift. */
+.replay-landing-overlay {
+  align-items: safe center;
+  padding: 4vh 1.5em;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
 .replay-overlay-card {
   display: flex;
   flex-direction: column;
@@ -315,11 +342,6 @@
 }
 .replay-limitations p {
   margin: 0 0 0.5em;
-}
-.replay-limitations-sub {
-  font-weight: 600;
-  color: var(--color-fg-primary);
-  margin: 0.6em 0 0.2em;
 }
 .replay-limitations ul {
   margin: 0 0 0.5em;
@@ -378,11 +400,104 @@
   display: none;
 }
 
+/* two-step external-file preview: a chosen/dropped file's team + placement (from its trailer) with a Play
+   button, shown in the dropzone's place before booting */
+.replay-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+  padding: 0.6em 0.8em;
+}
+.replay-preview-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.8em;
+}
+.replay-preview-name {
+  font-weight: 700;
+  color: var(--color-fg-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.replay-preview-actions {
+  display: flex;
+  gap: 0.5em;
+  margin-top: 0.2em;
+}
+/* the preview shows the team at a proper, readable size (vs the compact library-row thumbnails) */
+.replay-preview .replay-row-summary {
+  gap: 7px;
+  margin-top: 1px;
+}
+.replay-preview .replay-row-summary .replay-row-portrait {
+  width: 38px;
+  height: 38px;
+}
+.replay-preview .replay-rank {
+  font-size: 0.95em;
+  padding: 3px 8px;
+}
+
 /* replays library: the list of recordings stored in this browser (OPFS), each with watch/download/delete,
    plus a "keep most recent N" retention control. Wider than the bare picker card to fit the rows. */
 .replay-library-card {
-  max-width: 600px;
-  width: min(600px, 92vw);
+  max-width: 1300px;
+  width: min(1300px, 95vw);
+}
+
+/* /replay landing — two columns: dropzone + limitations on the LEFT, the recordings list (scrollable) on
+   the RIGHT. Widened from the old single 600px column so the recordings have room and the empty space is
+   used. The card title left-aligns as a header above both columns. */
+.replay-library-card .replay-overlay-title {
+  align-self: flex-start;
+  margin-bottom: 0.6em;
+}
+.replay-landing-cols {
+  display: grid;
+  /* left (dropzone/preview + limitations) gets a bit more, so a proper-size preview team (up to 13) fits on
+     one line; the recordings rows are compact and don't need the extra width */
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 1.8em;
+  width: 100%;
+  /* stretch so both columns share the taller one's height; the dropzone/preview then centres in its column
+     (justify-content: center on .replay-landing-left) instead of leaving a gap under it */
+  align-items: stretch;
+  text-align: left;
+}
+.replay-landing-left {
+  order: -1; /* renders in the LEFT column (before the recordings, which come first in source) */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  /* a stable slot height so swapping the dropzone ↔ preview (which differ in height, and vary with team
+     size) doesn't change the card height and re-centre it — the file-pick jitter fix, WITHOUT giving up
+     vertical centering (the landing overlay stays centered) */
+  min-height: 150px;
+  gap: 1.1em;
+}
+.replay-landing-left .replay-dropzone {
+  margin-top: 0;
+}
+/* the recordings column scrolls within a capped height so a full keep-20 library never blows out the card */
+.replay-landing-right .replay-library-list {
+  max-height: 46vh;
+}
+/* Limitations blurb: a full-width footer below the two columns, flowed into columns so the lines stay a
+   readable length while filling the width (keeps the card landscape, not "weirdly long"). Title spans all. */
+.replay-landing-cols + .replay-limitations {
+  max-width: none;
+  margin-top: 1.3em;
+  columns: 2;
+  column-gap: 2.5em;
+}
+.replay-landing-cols + .replay-limitations .replay-limitations-title {
+  column-span: all;
+}
+.replay-landing-cols + .replay-limitations p,
+.replay-landing-cols + .replay-limitations ul {
+  break-inside: avoid;
 }
 .replay-library {
   width: 100%;
@@ -406,13 +521,10 @@
   color: var(--color-fg-secondary);
   white-space: nowrap;
 }
+/* the keep-count dropdown inherits the game's native select styling (custom-inputs.css); only nudge it
+   compact for the inline header */
 .replay-keep select {
-  background: var(--color-bg-input);
-  color: var(--color-fg-primary);
-  border: 1px solid var(--color-bg-tertiary);
-  border-radius: 6px;
-  padding: 0.15em 0.3em;
-  cursor: var(--cursor-hover);
+  padding: 2px 10px 2px 6px;
 }
 .replay-library-list {
   list-style: none;
@@ -424,14 +536,17 @@
   max-height: 240px;
   overflow-y: auto;
 }
+/* rows use the game's native .my-box look (bg-secondary + thin border + 12px radius), like the profile
+   game-history rows, instead of a bespoke dark pill */
 .replay-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.8em;
-  padding: 0.45em 0.65em;
-  background: var(--color-bg-input);
-  border-radius: 8px;
+  padding: 0.4em 0.6em;
+  background: var(--color-bg-secondary);
+  border: var(--border-thin);
+  border-radius: 12px;
 }
 .replay-row-info {
   display: flex;
@@ -452,6 +567,33 @@
   align-items: center;
   gap: 0.3em;
   flex-shrink: 0;
+}
+/* rich row (from the file's match-summary trailer): final placement badge + final-team portraits */
+.replay-row-summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+.replay-rank {
+  font-weight: 700;
+  font-size: 0.72em;
+  line-height: 1;
+  color: var(--color-bg-secondary, #141821);
+  background: var(--color-fg-secondary);
+  border-radius: 5px;
+  padding: 2px 5px;
+}
+.replay-rank.win {
+  background: var(--color-fg-gold);
+}
+/* team portraits: sized so a full board (up to 13 with gold-bow + Smeargle-scribble) fits on one line;
+   wraps gracefully if a row is ever narrower */
+.replay-row-summary .replay-row-portrait {
+  width: 18px;
+  height: 18px;
+  image-rendering: pixelated;
 }
 .replay-confirm-q {
   font-size: 0.82em;

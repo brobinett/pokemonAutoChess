@@ -22,8 +22,9 @@ import {
   loadStoredReplay,
   type ReplayFileInfo
 } from "../game/recorder"
-import { detectBuildSkew, loadReplay } from "../game/replay-format"
+import { detectBuildSkew, loadReplay, type ReplaySummary } from "../game/replay-format"
 import { ReplayRoom, type ReplayManifest } from "../game/replay-room"
+import PokemonPortrait from "./component/pokemon-portrait"
 import { useAppDispatch, useAppSelector } from "../hooks"
 import { rooms } from "../network"
 import { usePreference } from "../preferences"
@@ -639,6 +640,30 @@ function formatSize(bytes: number): string {
   return `${bytes} B`
 }
 
+// A library row's rich summary from the file's trailer: the POV's final placement badge + final-team
+// portraits. Absent on old/foreign recordings (f.summary null) → the row just shows time/size. Portrait
+// tooltips route the Pkm name through the game's pkm.* locale keys (dynamic key → the string-t escape hatch).
+function RowSummary({ summary }: { summary: ReplaySummary }) {
+  const { t } = useTranslation()
+  const pkmName = (n: string) => (t as (k: string) => string)(`pkm.${n}`)
+  const team = summary.team ?? []
+  return (
+    <span className="replay-row-summary">
+      {summary.rank != null && (
+        <span className={`replay-rank${summary.rank === 1 ? " win" : ""}`}>{`#${summary.rank}`}</span>
+      )}
+      {team.map((u, i) => (
+        <PokemonPortrait
+          key={`${u.index}-${i}`}
+          className="replay-row-portrait"
+          portrait={{ index: u.index, shiny: u.shiny }}
+          title={pkmName(u.name)}
+        />
+      ))}
+    </span>
+  )
+}
+
 // The /replay landing screen: a library of recordings stored in this browser (OPFS) plus the option to
 // open an external `.colreplay` file. Each stored row can be Watched (loaded straight from OPFS — no
 // manual file pick), Downloaded (to a portable file), or Deleted. A "keep most recent N" control edits the
@@ -658,6 +683,11 @@ function ReplayLibrary({
   const [busy, setBusy] = useState(false) // a watch/download is in flight — disable row actions
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null) // roomId pending inline confirm
   const [over, setOver] = useState(false) // drag-over highlight for the external-file dropzone
+  // Two-step external-file open: choosing/dropping a file DECODES it (loadReplay, the same decode Play would
+  // do — not wasted) and holds the manifest for a preview (team + placement from its trailer) instead of
+  // booting straight away; Play then boots the already-decoded manifest.
+  const [preview, setPreview] = useState<{ manifest: ReplayManifest; name: string } | null>(null)
+  const [reading, setReading] = useState(false)
   const [keep, setKeep] = usePreference("keepReplays")
   const [recording] = usePreference("recordReplays")
   const fail = (e: unknown) => onError(String((e as Error)?.message ?? e))
@@ -675,11 +705,22 @@ function ReplayLibrary({
     onLoadStart()
     loadStoredReplay(roomId).then(onManifest).catch(fail)
   }
-  const watchFile = (f: File) => {
-    onLoadStart()
+  const previewFile = (f: File) => {
+    setReading(true)
     f.arrayBuffer()
-      .then((b) => onManifest(loadReplay(b)))
-      .catch(fail)
+      .then((b) => {
+        setPreview({ manifest: loadReplay(b), name: f.name })
+        setReading(false)
+      })
+      .catch((e) => {
+        setReading(false)
+        fail(e)
+      })
+  }
+  const playPreview = () => {
+    if (!preview) return
+    onLoadStart()
+    onManifest(preview.manifest)
   }
   const download = (f: ReplayFileInfo) => {
     setBusy(true)
@@ -693,7 +734,7 @@ function ReplayLibrary({
   }
 
   return (
-    <div className="replay-overlay">
+    <div className="replay-overlay replay-landing-overlay">
       <div
         className="my-container replay-overlay-card replay-library-card"
         onDragOver={(e) => {
@@ -705,11 +746,13 @@ function ReplayLibrary({
           e.preventDefault()
           setOver(false)
           const f = e.dataTransfer.files?.[0]
-          if (f) watchFile(f)
+          if (f) previewFile(f)
         }}
       >
         <div className="replay-overlay-title">{t("replay.library.title")}</div>
 
+        <div className="replay-landing-cols">
+          <div className="replay-landing-right">
         <div className="replay-library">
           <div className="replay-library-head">
             <span className="replay-library-label">{t("replay.library.saved_here")}</span>
@@ -756,6 +799,7 @@ function ReplayLibrary({
                         </span>
                       ) : null}
                     </span>
+                    {f.summary && <RowSummary summary={f.summary} />}
                   </div>
                   {confirmDelete === f.roomId ? (
                     <div className="replay-row-actions">
@@ -805,28 +849,64 @@ function ReplayLibrary({
           )}
           <p className="replay-keep-hint">{t("replay.library.prune_hint")}</p>
         </div>
-
-        <div className={`replay-dropzone${over ? " over" : ""}`}>
-          <div className="replay-overlay-sub">
-            {t("replay.library.dropzone_pre")} <code>.colreplay</code>{" "}
-            {t("replay.library.dropzone_post")}
           </div>
-          <label className="bubbly blue replay-file-label">
-            {t("replay.library.choose_file")}
-            <input
-              type="file"
-              accept=".json,.colreplay,application/json"
-              onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) watchFile(f)
-              }}
-            />
-          </label>
+
+          <div className="replay-landing-left">
+        {preview ? (
+          <div className="replay-preview my-box">
+            <div className="replay-preview-head">
+              <span className="replay-preview-name">
+                {preview.manifest.summary?.name ?? preview.name}
+              </span>
+              {preview.manifest.game ? (
+                <span className="replay-row-meta">{preview.manifest.game.version}</span>
+              ) : null}
+            </div>
+            {preview.manifest.summary ? (
+              <RowSummary summary={preview.manifest.summary} />
+            ) : (
+              <div className="replay-row-meta">{t("replay.library.no_summary")}</div>
+            )}
+            <div className="replay-preview-actions">
+              <button className="bubbly blue" onClick={playPreview}>
+                ▶ {t("replay.library.play")}
+              </button>
+              <button className="bubbly" onClick={() => setPreview(null)}>
+                {t("replay.library.choose_another")}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className={`replay-dropzone${over ? " over" : ""}`}>
+            <div className="replay-overlay-sub">
+              {reading ? (
+                t("replay.library.reading")
+              ) : (
+                <>
+                  {t("replay.library.dropzone_pre")} <code>.colreplay</code>{" "}
+                  {t("replay.library.dropzone_post")}
+                </>
+              )}
+            </div>
+            <label className="bubbly blue replay-file-label">
+              {t("replay.library.choose_file")}
+              <input
+                type="file"
+                accept=".json,.colreplay,application/json"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) previewFile(f)
+                }}
+              />
+            </label>
+          </div>
+        )}
+          </div>
         </div>
 
-        {/* Inline emphasis is flattened into the translation values (one key per paragraph / list item):
-            PAC has no <Trans> in app UI (it splits at element boundaries instead), so a single key per
-            block keeps the blurb fully translatable rather than fragmenting each sentence. */}
+        {/* Limitations blurb spans the full card width BELOW the two columns (keeps the card landscape +
+            balanced rather than making the left column weirdly tall). Inline emphasis is flattened into the
+            translation values (one key per paragraph / li): PAC has no <Trans> in app UI. */}
         <div className="replay-limitations">
           <div className="replay-limitations-title">{t("replay.about.title")}</div>
           <p>{t("replay.about.privacy")}</p>
@@ -837,6 +917,7 @@ function ReplayLibrary({
             <li>{t("replay.about.pov_income")}</li>
           </ul>
           <p>{t("replay.about.gap")}</p>
+          <p>{t("replay.about.playback")}</p>
         </div>
       </div>
     </div>

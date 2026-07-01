@@ -5064,7 +5064,11 @@
 			"prune_hint": "Older replays are removed automatically when you start a new game. Download any you want to keep",
 			"dropzone_pre": "Or open a",
 			"dropzone_post": "file from your computer:",
-			"choose_file": "Choose a file"
+			"choose_file": "Choose a file",
+			"reading": "Reading replay…",
+			"play": "Play",
+			"choose_another": "Choose another",
+			"no_summary": "No preview for this recording"
 		},
 		"about": {
 			"title": "Limitations of client-side replays",
@@ -5073,7 +5077,8 @@
 			"pov_shop": "Shop — rerolls, buys, and shop removals. Everyone else's shop is hidden, so an opponent buying a unit just reads as \"gained.\"",
 			"pov_combat": "Combat casts & damage — ability casts and damage / heal numbers follow the recorder's camera (captured only for the board being watched), so scouting another board mid-fight gets you its casts but misses your own.",
 			"pov_income": "Income breakdown — the per-round income split (base / interest / streak) is sent only to the recording player.",
-			"gap": "A disconnect during recording leaves a short gap."
+			"gap": "A disconnect during recording leaves a short gap.",
+			"playback": "Playback reconstructs the match from recorded game state, not video. Sound is regenerated live by your client — region music and the usual chimes, at your own volume settings; the game has no combat sound effects to capture. The speed control changes how fast the match state advances, but animations, movement, and audio always play at normal rate, so fast-forward looks snappier rather than smoothly sped up, and the fastest speeds are limited by how quickly your machine can render each frame."
 		},
 		"eventlog": {
 			"title": "Event log",

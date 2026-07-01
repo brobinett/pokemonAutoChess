@@ -3,7 +3,7 @@ import {
   type ReplayFileHandle,
   type ReplayWriterMeta
 } from "./opfs-replay-writer"
-import { readReplayHeader } from "./replay-format"
+import { readReplayHeader, readReplayTrailer, type ReplaySummary } from "./replay-format"
 import type { ReplayFrame } from "./replay-room"
 
 // The pure logic of the recorder worker, factored out of the browser shell (recorder.worker.ts) so it can
@@ -24,6 +24,9 @@ export interface ReplayReadWriteHandle extends ReplayFileHandle {
 export interface RawReplayEntry {
   roomId: string
   header: Uint8Array
+  /** the file's trailing bytes (a small tail read) — the core parses the match-summary footer from it; omit
+   *  when unavailable (older shells / tests) → the summary is just null. */
+  tail?: Uint8Array
   bytes: number
   mtime: number
 }
@@ -37,6 +40,8 @@ export interface ReplayFileInfo {
   bytes: number
   game: { version: string; assetsVersion: string } | null
   viewerUid: string | null
+  /** POV final team + placement from the trailer footer; null on old/foreign files. */
+  summary: ReplaySummary | null
 }
 
 export interface WorkerDeps {
@@ -65,7 +70,7 @@ export type RecorderInMessage =
   | { type: "list"; id: number }
   | { type: "delete"; roomId: string; id: number }
   | { type: "config"; keep: number }
-  | { type: "close" }
+  | { type: "close"; summary?: ReplaySummary }
 
 // How many SEALED recordings survive a new-game prune (plus the in-progress one, always protected). The
 // default; the main thread overrides it from the `keepReplays` preference via a "config" message.
@@ -87,7 +92,8 @@ function summariseEntry(e: RawReplayEntry): ReplayFileInfo {
     game: meta
       ? { version: meta.game.version, assetsVersion: meta.game.assetsVersion }
       : null,
-    viewerUid: meta?.viewerUid ?? null
+    viewerUid: meta?.viewerUid ?? null,
+    summary: e.tail ? readReplayTrailer(e.tail) : null
   }
 }
 
@@ -263,6 +269,7 @@ export function createRecorderWorker(deps: WorkerDeps) {
       case "close":
         if (current) {
           try {
+            if (msg.summary) current.writer.writeTrailer(msg.summary)
             current.writer.close()
           } catch (e) {
             console.error("[recorder.worker] close", e)

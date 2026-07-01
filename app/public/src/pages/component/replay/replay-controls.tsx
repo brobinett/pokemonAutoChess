@@ -32,6 +32,9 @@ const fmt = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000))
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
 }
+// Speed label: sub-1× speeds read as fractions (1/8× not 0.125×) — shorter, and the dropdown is
+// fixed-width so no option resizes the bar. Whole multipliers stay as N×.
+const speedLabel = (s: number) => (s < 1 ? `1/${Math.round(1 / s)}×` : `${s}×`)
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 
 const loadPos = (): { x: number; y: number } | null => {
@@ -41,6 +44,32 @@ const loadPos = (): { x: number; y: number } | null => {
   } catch {
     return null
   }
+}
+
+// Inline SVG control icons (24×24, filled with currentColor so they inherit the button's text color and
+// the disabled dim). The game styles its own buttons with SVG assets, so these match house style and, unlike
+// the old Unicode glyphs (▶ ⏸ ‹ › ⏮ ⏭), render at one uniform weight on every machine — the glyphs' per-font
+// metrics made pause tiny and the phase steps look like thin `<` `>`.
+const RcIcon = ({ d, d2 }: { d: string; d2?: string }) => (
+  <svg className="rc-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path d={d} />
+    {d2 ? <path d={d2} /> : null}
+  </svg>
+)
+// Skip-STAGE = bar + triangle (⏮ ⏭); skip-PHASE = a bare triangle (◀ ▶); play/pause/restart share the
+// center button. Paths are Material-style transport glyphs on a 24×24 grid.
+const IC = {
+  play: "M8 5l11 7-11 7z",
+  triLeft: "M16 5L5 12l11 7z",
+  triRight: "M8 5l11 7-11 7z",
+  pauseL: "M6 5h4v14H6z",
+  pauseR: "M14 5h4v14h-4z",
+  skipPrevBar: "M6 6h2v12H6z",
+  skipPrevTri: "M18 6L9 12l9 6z",
+  skipNextBar: "M16 6h2v12h-2z",
+  skipNextTri: "M6 6l9 6-9 6z",
+  restart:
+    "M12 5V1L7 6l5 5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"
 }
 
 export default function ReplayControls({
@@ -198,10 +227,10 @@ export default function ReplayControls({
       {targets && (
         <>
           <button className="bubbly rc-skip" title={t("replay.controls.prev_stage")} disabled={targets.prevStage == null} onClick={() => go(prevStage)}>
-            ⏮
+            <RcIcon d={IC.skipPrevTri} d2={IC.skipPrevBar} />
           </button>
           <button className="bubbly rc-skip" title={t("replay.controls.prev_phase")} disabled={targets.prevPhase == null} onClick={() => go(prevPhase)}>
-            ‹
+            <RcIcon d={IC.triLeft} />
           </button>
         </>
       )}
@@ -211,16 +240,16 @@ export default function ReplayControls({
         title={room.ended ? t("replay.controls.restart") : room.paused ? t("replay.controls.play") : t("replay.controls.pause")}
         onClick={() => (room.ended ? onRestart() : room.togglePause())}
       >
-        {room.ended ? "↻" : room.paused ? "▶" : "⏸"}
+        {room.ended ? <RcIcon d={IC.restart} /> : room.paused ? <RcIcon d={IC.play} /> : <RcIcon d={IC.pauseL} d2={IC.pauseR} />}
       </button>
 
       {targets && (
         <>
           <button className="bubbly rc-skip" title={t("replay.controls.next_phase")} disabled={targets.nextPhase == null} onClick={() => go(nextPhase)}>
-            ›
+            <RcIcon d={IC.triRight} />
           </button>
           <button className="bubbly rc-skip" title={t("replay.controls.next_stage")} disabled={targets.nextStage == null} onClick={() => go(nextStage)}>
-            ⏭
+            <RcIcon d={IC.skipNextTri} d2={IC.skipNextBar} />
           </button>
         </>
       )}
@@ -317,7 +346,7 @@ export default function ReplayControls({
       >
         {SPEEDS.map((s) => (
           <option key={s} value={s}>
-            {s}×
+            {speedLabel(s)}
           </option>
         ))}
       </select>

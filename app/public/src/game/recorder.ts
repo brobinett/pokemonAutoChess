@@ -6,8 +6,10 @@ import store from "../stores"
 import { type CapturedFrame, createFlushController } from "./recorder-flush-core"
 import type { ReplayWriterMeta } from "./opfs-replay-writer"
 import type { ReplayFileInfo } from "./recorder-worker-core"
-import { loadReplay } from "./replay-format"
+import { loadReplay, type ReplaySummary } from "./replay-format"
 import type { ReplayFrame, ReplayManifest } from "./replay-room"
+import type GameState from "../../../rooms/states/game-state"
+import { Transfer } from "../../../types"
 
 export type { ReplayFileInfo } from "./recorder-worker-core"
 
@@ -45,6 +47,10 @@ let lastGameRoom: Room | null = null
 export function getActiveGameRoom(): Room | null {
   return rooms.game ?? lastGameRoom
 }
+// The POV's end-of-game summary, snapshotted at GAME_END (while the game room + final state are still live)
+// — the reliable capture point. resetActiveGameRoom (return-to-lobby) prefers this, falling back to a fresh
+// read of the retained state if GAME_END wasn't seen (e.g. a loser who left before it).
+let pendingSummary: ReplaySummary | undefined
 
 // Release the retained finished-game room (and, transitively, its in-memory capture buffers held via the
 // serializer WeakMap key). Called when the player returns to the lobby — past the after-game screen where
@@ -52,11 +58,42 @@ export function getActiveGameRoom(): Room | null {
 // frames linger in memory until a new game overwrites the ref (or forever while idling in lobby).
 export function resetActiveGameRoom() {
   const roomId = lastGameRoom?.roomId ?? rooms.game?.roomId
+  // Prefer the GAME_END snapshot (taken while the game was live); fall back to a fresh read of the retained
+  // final state (e.g. a loser who left before GAME_END). Cleared for the next game.
+  const summary = pendingSummary ?? captureSummary()
+  pendingSummary = undefined
   lastGameRoom = null
   if (roomId) controller.forget(roomId) // drop the finished game's in-flight/tally state
-  // Past the after-game download → tell the worker to flush + release the OPFS handle. The file stays on
-  // disk (re-openable on a future reconnect to the same roomId); only the exclusive sync handle is freed.
-  worker?.postMessage({ type: "close" })
+  // Past the after-game download → tell the worker to write the match-summary trailer, flush + release the
+  // OPFS handle. The file stays on disk (re-openable on a future reconnect to the same roomId); only the
+  // exclusive sync handle is freed.
+  worker?.postMessage({ type: "close", summary })
+}
+
+// Snapshot the POV player's end-of-game team + placement from the (retained) final game state, for the
+// file's match-summary trailer (read at close, while getActiveGameRoom() still resolves the finished room —
+// its decoded state keeps every player, eliminated ones with their finishing rank + frozen board). Purely
+// best-effort: returns undefined if state/player isn't available, so the file is simply written without a
+// trailer (the library then shows that row plainly — back-compatible with pre-trailer recordings).
+function captureSummary(): ReplaySummary | undefined {
+  try {
+    const state = (getActiveGameRoom() as unknown as { state?: GameState } | null)?.state
+    const uid = store.getState().network.uid
+    const player = state?.players?.get(uid)
+    if (!player) return undefined
+    const team: ReplaySummary["team"] = []
+    player.board?.forEach((p) => {
+      // deployed units only (bench sits at positionY 0); index/shiny drive the portrait, name the tooltip
+      if (p.positionY > 0) team.push({ name: p.name, index: p.index, shiny: p.shiny || undefined })
+    })
+    const summary: ReplaySummary = {}
+    if (player.rank) summary.rank = player.rank
+    if (team.length) summary.team = team
+    if (player.name) summary.name = player.name
+    return summary.rank || summary.team || summary.name ? summary : undefined
+  } catch {
+    return undefined
+  }
 }
 
 // The game build a recording was made in, stamped into every file's header so the viewer can warn on a
@@ -301,6 +338,9 @@ export function installRecorder() {
           type,
           payload: serializePayload(message)
         })
+      // Snapshot the POV's final team + placement at GAME_END, while the game room's state is still live —
+      // the trailer written at close (resetActiveGameRoom) uses this.
+      if (recordingEnabled && type === Transfer.GAME_END) pendingSummary = captureSummary()
     } catch (e) {
       console.error(
         "[recorder] message capture failed (live dispatch unaffected)",

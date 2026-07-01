@@ -46,9 +46,11 @@ const core = createRecorderWorker({
     return new Uint8Array(await file.arrayBuffer())
   },
   async list(): Promise<RawReplayEntry[]> {
-    // Enumerate every stored recording for the library. Read only a generous header PREFIX of each file
-    // (the metadata JSON is a few hundred bytes — never the whole multi-MB recording); the core parses it.
+    // Enumerate every stored recording for the library. Read only a generous header PREFIX + a small TAIL of
+    // each file (never the whole multi-MB recording): the metadata JSON is a few hundred bytes at the front,
+    // the match-summary trailer a few hundred at the end; the core parses both.
     const HEADER_PREFIX = 16384
+    const TAIL_BYTES = 4096
     const dir = await replaysDir()
     const out: RawReplayEntry[] = []
     const iter = dir as unknown as {
@@ -61,9 +63,13 @@ const core = createRecorderWorker({
         const header = new Uint8Array(
           await file.slice(0, HEADER_PREFIX).arrayBuffer()
         )
+        const tail = new Uint8Array(
+          await file.slice(Math.max(0, file.size - TAIL_BYTES)).arrayBuffer()
+        )
         out.push({
           roomId: name.slice(0, -".colreplay".length),
           header,
+          tail,
           bytes: file.size,
           mtime: file.lastModified
         })
