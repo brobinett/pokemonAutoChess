@@ -650,7 +650,10 @@ function RowSummary({ summary }: { summary: ReplaySummary }) {
   return (
     <span className="replay-row-summary">
       {summary.rank != null && (
-        <span className={`replay-rank${summary.rank === 1 ? " win" : ""}`}>{`#${summary.rank}`}</span>
+        // Placement styled like the profile match history ("Top 1", "Top 7") — reuses the game's own `top` key.
+        <span className="replay-rank">
+          {t("top")} {summary.rank}
+        </span>
       )}
       {team.map((u, i) => (
         <PokemonPortrait

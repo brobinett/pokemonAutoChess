@@ -426,25 +426,14 @@
   gap: 0.5em;
   margin-top: 0.2em;
 }
-/* the preview shows the team at a proper, readable size (vs the compact library-row thumbnails) */
-.replay-preview .replay-row-summary {
-  gap: 7px;
-  margin-top: 1px;
-}
-.replay-preview .replay-row-summary .replay-row-portrait {
-  width: 38px;
-  height: 38px;
-}
-.replay-preview .replay-rank {
-  font-size: 0.95em;
-  padding: 3px 8px;
-}
+/* the preview shows the same rich summary as the library rows (portrait size + placement are shared, see
+   .replay-row-summary below) */
 
 /* replays library: the list of recordings stored in this browser (OPFS), each with watch/download/delete,
    plus a "keep most recent N" retention control. Wider than the bare picker card to fit the rows. */
 .replay-library-card {
-  max-width: 1150px;
-  width: min(1150px, 95vw);
+  max-width: 1320px;
+  width: min(1320px, 95vw);
 }
 
 /* /replay landing — two columns: dropzone + limitations on the LEFT, the recordings list (scrollable) on
@@ -456,13 +445,12 @@
 }
 .replay-landing-cols {
   display: grid;
-  /* left (dropzone/preview + limitations) gets a bit more, so a proper-size preview team (up to 13) fits on
-     one line; the recordings rows are compact and don't need the extra width */
-  grid-template-columns: 1.1fr 0.9fr;
+  /* the recordings column (right) gets a touch more so a full-size team (38px portraits + Watch/download/delete)
+     fits on a line before wrapping; the left column still has room for the preview team + limitations */
+  grid-template-columns: 1fr 1.12fr;
   gap: 1.8em;
   width: 100%;
-  /* stretch so both columns share the taller one's height; the dropzone/preview then centres in its column
-     (justify-content: center on .replay-landing-left) instead of leaving a gap under it */
+  /* stretch so both columns share the taller one's height */
   align-items: stretch;
   text-align: left;
 }
@@ -567,31 +555,28 @@
   gap: 0.3em;
   flex-shrink: 0;
 }
-/* rich row (from the file's match-summary trailer): final placement badge + final-team portraits */
+/* rich row (from the file's match-summary trailer): final placement + final-team portraits. The same
+   presentation is used in the library rows and the file-picker preview (one portrait size everywhere). */
 .replay-row-summary {
   display: flex;
   align-items: center;
-  gap: 5px;
-  margin-top: 3px;
+  gap: 7px;
+  margin-top: 4px;
   flex-wrap: wrap;
 }
+/* placement as plain "Top N" text, matching the profile match history (.game-history .top) — not a pill */
 .replay-rank {
   font-weight: 700;
-  font-size: 0.72em;
   line-height: 1;
-  color: var(--color-bg-secondary, #141821);
-  background: var(--color-fg-secondary);
-  border-radius: 5px;
-  padding: 2px 5px;
+  white-space: nowrap;
+  color: var(--color-fg-primary);
+  margin-right: 2px;
 }
-.replay-rank.win {
-  background: var(--color-fg-gold);
-}
-/* team portraits: sized so a full board (up to 13 with gold-bow + Smeargle-scribble) fits on one line;
-   wraps gracefully if a row is ever narrower */
+/* team portraits: readable thumbnails (same size as the picker preview); a full board (up to 13) wraps to a
+   second line rather than forcing the card wider than its layout */
 .replay-row-summary .replay-row-portrait {
-  width: 18px;
-  height: 18px;
+  width: 38px;
+  height: 38px;
   image-rendering: pixelated;
 }
 .replay-confirm-q {
