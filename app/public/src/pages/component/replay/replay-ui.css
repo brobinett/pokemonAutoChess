@@ -407,8 +407,11 @@
 /* replays library: the list of recordings stored in this browser (OPFS), each with watch/download/delete,
    plus a "keep most recent N" retention control. Wider than the bare picker card to fit the rows. */
 .replay-library-card {
-  max-width: 1320px;
-  width: min(1320px, 95vw);
+  /* wide enough that a 10-unit team (38px portraits + "Top N") fits on one line in BOTH the picker preview
+     and a library row at even columns — the preview is the tighter of the two (its "Choose another" button
+     is wider than the library's icon actions). Measured: 10 units clear the wrap at ~1520px. */
+  max-width: 1520px;
+  width: min(1520px, 95vw);
 }
 
 /* /replay landing — two columns: dropzone + limitations on the LEFT, the recordings list (scrollable) on
@@ -420,9 +423,9 @@
 }
 .replay-landing-cols {
   display: grid;
-  /* the recordings column (right) gets a touch more so a full-size team (38px portraits + Watch/download/delete)
-     fits on a line before wrapping; the left column still has room for the preview team + limitations */
-  grid-template-columns: 1fr 1.12fr;
+  /* even columns — the picker/limitations (left) and recordings (right) read as a balanced pair; the card is
+     sized wide enough that a full-size team fits on one line in both (see .replay-library-card) */
+  grid-template-columns: 1fr 1fr;
   gap: 1.8em;
   width: 100%;
   /* stretch so both columns share the taller one's height */
