@@ -412,6 +412,10 @@
      is wider than the library's icon actions). Measured: 10 units clear the wrap at ~1520px. */
   max-width: 1520px;
   width: min(1520px, 95vw);
+  /* Hold a landscape aspect at this width rather than a wide/short banner. Some bottom whitespace is expected
+     for now (few saved games + not-yet-final limitations copy); the copy pass will fill it. Capped to the
+     viewport so a short screen scrolls instead of clipping (the overlay is overflow-y: auto). */
+  min-height: min(880px, 86vh);
 }
 
 /* /replay landing — two columns: dropzone + limitations on the LEFT, the recordings list (scrollable) on
