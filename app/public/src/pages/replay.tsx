@@ -972,15 +972,27 @@ function ReplayLibrary({
                 paragraph / li): PAC has no <Trans> in app UI. */}
             <div className="replay-limitations">
               <div className="replay-limitations-title">{t("replay.about.title")}</div>
-              <p>{t("replay.about.privacy")}</p>
-              <p>{t("replay.about.reconstructed")}</p>
+              {/* The storage/download heads-up leads the block on purpose: a saved-replays list looks like
+                  cloud-stored games, so make "these live in your browser, download to keep" the first thing. */}
+              <p className="replay-limitations-lead">{t("replay.about.storage")}</p>
+              <p>{t("replay.about.storage_detail")}</p>
+              <div className="replay-limitations-subtitle">
+                {t("replay.about.recording_title")}
+              </div>
               <ul>
-                <li>{t("replay.about.pov_shop")}</li>
-                <li>{t("replay.about.pov_combat")}</li>
-                <li>{t("replay.about.pov_income")}</li>
+                <li>{t("replay.about.rec_shop")}</li>
+                <li>{t("replay.about.rec_combat")}</li>
+                <li>{t("replay.about.rec_income")}</li>
+                <li>{t("replay.about.rec_gap")}</li>
               </ul>
-              <p>{t("replay.about.gap")}</p>
-              <p>{t("replay.about.playback")}</p>
+              <div className="replay-limitations-subtitle">
+                {t("replay.about.playback_title")}
+              </div>
+              <ul>
+                <li>{t("replay.about.play_rebuild")}</li>
+                <li>{t("replay.about.play_sound")}</li>
+                <li>{t("replay.about.play_speed")}</li>
+              </ul>
             </div>
           </div>
         </div>

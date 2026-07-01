@@ -249,7 +249,7 @@ export function MainSidebar(props: MainSidebarProps) {
 
         {page !== "game" && (
           <NavLink svg="compact-disc" onClick={() => navigate("/replay")}>
-            Replay viewer
+            {t("replay.nav")}
           </NavLink>
         )}
 

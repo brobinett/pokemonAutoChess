@@ -340,6 +340,19 @@
   color: var(--color-fg-primary);
   margin-bottom: 0.4em;
 }
+/* The lead heads-up (saved in your browser / download to keep) is the one line a non-reader must catch, so
+   give it more weight than the surrounding fine print. */
+.replay-limitations-lead {
+  font-weight: 600;
+  color: var(--color-fg-primary);
+}
+/* Section sub-headers ("Recorded from one player's view" / "How playback works") splitting the recording-side
+   from the playback-side caveats. */
+.replay-limitations-subtitle {
+  font-weight: 600;
+  color: var(--color-fg-primary);
+  margin: 0.7em 0 0.2em;
+}
 .replay-limitations p {
   margin: 0 0 0.5em;
 }
