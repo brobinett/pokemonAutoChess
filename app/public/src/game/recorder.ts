@@ -6,7 +6,7 @@ import store from "../stores"
 import { type CapturedFrame, createFlushController } from "./recorder-flush-core"
 import type { ReplayWriterMeta } from "./opfs-replay-writer"
 import type { ReplayFileInfo } from "./recorder-worker-core"
-import { ensureReplayTrailer, loadReplay, type ReplaySummary } from "./replay-format"
+import { deriveFinalRank, ensureReplayTrailer, loadReplay, type ReplaySummary } from "./replay-format"
 import type { ReplayFrame, ReplayManifest } from "./replay-room"
 import type GameState from "../../../rooms/states/game-state"
 import { Transfer } from "../../../types"
@@ -87,7 +87,14 @@ function captureSummary(): ReplaySummary | undefined {
       if (p.positionY > 0) team.push({ name: p.name, index: p.index, shiny: p.shiny || undefined })
     })
     const summary: ReplaySummary = {}
-    if (player.rank) summary.rank = player.rank
+    // player.rank is stale for a POV who LEFT before being eliminated (the surrender rank is assigned server-
+    // side after we disconnect) — derive the placement from the alive count instead (see deriveFinalRank).
+    let aliveCount = 0
+    state?.players?.forEach((p) => {
+      if (p.alive) aliveCount++
+    })
+    const rank = deriveFinalRank(player.rank, player.alive, aliveCount)
+    if (rank) summary.rank = rank
     if (team.length) summary.team = team
     if (player.name) summary.name = player.name
     return summary.rank || summary.team || summary.name ? summary : undefined

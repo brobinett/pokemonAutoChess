@@ -204,6 +204,33 @@ export interface ReplaySummary {
   name?: string
 }
 
+/** Derive the POV's final placement for the trailer from the last state the recording captured.
+ *
+ * `player.rank` is the LIVE provisional standing (the server's `rankPlayers` re-ranks the living by life
+ * then level after every combat round and it freezes at elimination — game-room.ts `rankPlayers`,
+ * simulation.ts). It's authoritative once the POV was eliminated (`alive === false`). But a POV who LEAVES
+ * while still alive surrenders, and the server assigns the surrender placement (life → -99, re-rank → last
+ * among the living) only in `onLeave` — AFTER our socket closed, so that final patch never reaches the
+ * recording. The captured `player.rank` is then whatever provisional value the POV last saw (round 1 with
+ * everyone at 100 life it's often 1), which reads as a bogus "top 1".
+ *
+ * Mirror the server for a still-alive POV: they place at the count of players still alive — a sole survivor
+ * (the winner, `alive` with everyone else eliminated) → 1; a round-1 leaver in a full lobby → 8. Both the
+ * winner and the surrenderer fall out of the same rule, so no separate "did they win vs leave" signal is
+ * needed (which matters because `gameFinished` is server-only, not synced into the recording).
+ * @param povRank    the POV player's captured `rank` (0/undefined if never set)
+ * @param povAlive   the POV player's captured `alive` flag
+ * @param aliveCount number of players with `alive === true` in the captured state (includes the POV)
+ */
+export function deriveFinalRank(
+  povRank: number | undefined,
+  povAlive: boolean,
+  aliveCount: number
+): number | undefined {
+  if (povAlive) return aliveCount > 0 ? aliveCount : povRank || undefined
+  return povRank || undefined
+}
+
 /** Encode the trailer footer for `summary` (append it after the last frame at close). */
 export function encodeReplayTrailer(summary: ReplaySummary): Uint8Array<ArrayBuffer> {
   const w = new ByteWriter()
