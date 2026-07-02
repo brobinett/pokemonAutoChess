@@ -185,14 +185,20 @@
   font-weight: 700;
   color: var(--color-fg-primary);
 }
+/* Hover-tooltip segment label — colored to MATCH the timeline bands (fight red, portal gold, carousel
+ * green, prep neutral), using the game's own fg tokens for legibility on the dark tooltip. Keyed by
+ * segmentBandKind, same as the bands, so the tooltip and the band under the cursor always agree. */
 .replay-controls .rc-hover-seg {
   color: var(--color-fg-secondary);
 }
 .replay-controls .rc-hover-seg.fight {
   color: var(--color-fg-red);
 }
-.replay-controls .rc-hover-seg.town {
-  color: var(--color-fg-accent);
+.replay-controls .rc-hover-seg.portal {
+  color: var(--color-fg-gold);
+}
+.replay-controls .rc-hover-seg.carousel {
+  color: var(--color-fg-green);
 }
 /* Played-region overlay: translucent so the phase bands beneath stay visible. */
 .replay-controls .rc-fill {
@@ -202,21 +208,18 @@
   pointer-events: none;
 }
 
-/* Stage-typed bands: the match rhythm at a glance, colored to match the wiki "Stages" page palette
- * (wiki-stages.css --stage-*-color). Prep is the neutral base track (no band). PvE fights and the
- * portal towns (starter/unique/legendary picks) are the loud landmarks; PvP fights and item carousels
- * are the quieter recurring rounds. */
+/* Stage-typed bands: the match rhythm at a glance. Town phases borrow the wiki "Stages" palette
+ * (wiki-stages.css --stage-*-color) — portal towns (starter/unique/legendary picks) yellow, item
+ * carousels green — so they read as distinct landmarks. All FIGHTs are one red (we don't split the wiki's
+ * PvE-red / PvP-grey; grey blended with the neutral track on a thin bar). Prep is the neutral base track. */
 .replay-controls .rc-band {
   position: absolute;
   top: 0;
   bottom: 0;
   pointer-events: none;
 }
-.replay-controls .rc-band.pve {
-  background: rgba(140, 32, 34, 0.62); /* wiki #8c2022 */
-}
-.replay-controls .rc-band.pvp {
-  background: rgba(120, 126, 145, 0.5); /* wiki battle #666, lifted toward the track's blue-grey so it stays visible on it */
+.replay-controls .rc-band.fight {
+  background: rgba(224, 32, 32, 0.42); /* combat red (game --color-fg-red #e81212 family) */
 }
 .replay-controls .rc-band.carousel {
   background: rgba(74, 165, 46, 0.5); /* wiki #4aa52e */

@@ -49,15 +49,16 @@ export interface ReplaySegment {
   phaseLabel: string
 }
 
-// Timeline band colour class for a segment, matching the wiki "Stages" page taxonomy
-// (app/pages/component/wiki/wiki-stages.css --stage-*-color): a FIGHT is "pve" on a scripted PvE stage
-// (PVEStages) else "pvp"; a TOWN is "portal" on the starter/unique/legendary carousels
-// (PortalCarouselStages = [0,10,20]) else "carousel" (item carousels); PICK stays neutral ("prep").
-// Add-pick stages (AdditionalPicksStages) are deliberately NOT distinguished — they aren't their own
-// phase (they ride a normal PICK), so they never surface as a segment. Kept as a pure helper so the
-// scrubber and any future consumer classify segments identically.
-export function segmentBandKind(seg: ReplaySegment): "prep" | "pve" | "pvp" | "carousel" | "portal" {
-  if (seg.phase === GamePhaseState.FIGHT) return PVEStages[seg.stage] ? "pve" : "pvp"
+// Timeline band colour class for a segment, loosely following the wiki "Stages" page taxonomy
+// (app/pages/component/wiki/wiki-stages.css --stage-*-color): a TOWN is "portal" on the
+// starter/unique/legendary carousels (PortalCarouselStages = [0,10,20]) else "carousel" (item carousels);
+// PICK stays neutral ("prep"). All FIGHTs are a single "fight" — we intentionally DON'T split the wiki's
+// PvE-red / PvP-grey, because on a thin bar the grey blended with the neutral prep track (the classifier
+// still has PVEStages/PortalCarouselStages available if we ever want to re-split). Add-pick stages
+// (AdditionalPicksStages) aren't their own phase (they ride a normal PICK), so they never surface as a
+// segment. Kept a pure helper so the scrubber + hover tooltip classify identically.
+export function segmentBandKind(seg: ReplaySegment): "prep" | "fight" | "carousel" | "portal" {
+  if (seg.phase === GamePhaseState.FIGHT) return "fight"
   if (seg.phase === GamePhaseState.TOWN) return PortalCarouselStages.includes(seg.stage) ? "portal" : "carousel"
   return "prep"
 }

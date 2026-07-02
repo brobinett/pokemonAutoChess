@@ -271,7 +271,7 @@ export default function ReplayControls({
               <div className="rc-hover-tip" style={{ left: `${clamp(hover.xPct, 7, 93)}%` }}>
                 <span className="rc-hover-time">{fmt(hover.ms - base)}</span>
                 {seg ? (
-                  <span className={`rc-hover-seg ${seg.phaseLabel.toLowerCase()}`}>
+                  <span className={`rc-hover-seg ${segmentBandKind(seg)}`}>
                     {t("replay.controls.pos", { stage: seg.stage, phase: seg.phaseLabel })}
                   </span>
                 ) : null}
