@@ -271,11 +271,12 @@ export function formatMessageRow(t: TFunction, type: string, payload: unknown, i
           : t(`${R}.cooked_dish`)
       }
       case "DIG": {
+        // One composable "dig" row (income-style fragments): optional site + optional treasure.
         const o = p as { buriedItem?: string | null }
         const d = info?.dig
-        const item = o?.buriedItem ? itemName(t, o.buriedItem) : ""
-        if (d) return o?.buriedItem ? t(`${R}.dug_found`, { x: d.x, y: d.y, depth: d.depth, item }) : t(`${R}.dug`, { x: d.x, y: d.y, depth: d.depth })
-        return o?.buriedItem ? t(`${R}.dug_up`, { item }) : t(`${R}.dug_hole`)
+        const where = d ? t(`${R}.dig_site`, { x: d.x, y: d.y, depth: d.depth }) : ""
+        const found = o?.buriedItem ? t(`${R}.dig_treasure`, { item: itemName(t, o.buriedItem) }) : ""
+        return t(`${R}.dig`, { where, found })
       }
       case "NPC_DIALOG": {
         const o = p as { npc?: string; dialog?: string }

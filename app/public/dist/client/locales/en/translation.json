@@ -5106,10 +5106,10 @@
 				"weather": "Weather"
 			},
 			"section": {
-				"casts_pov": "Ability / damage / healing · recorder's PoV",
-				"board_weather": "Board effects / weather · all boards",
-				"status_all": "Status · all boards",
-				"stats_all": "Stats · all boards"
+				"casts_pov": "Ability / damage / healing",
+				"board_weather": "Board effects / weather",
+				"status_all": "Status",
+				"stats_all": "Stats"
 			},
 			"phase": {
 				"pick": "Pick",
@@ -5177,10 +5177,9 @@
 				"game_over": "Game over",
 				"cooked": "Cooked {{dishes}}",
 				"cooked_dish": "Cooked a dish",
-				"dug": "Dug ({{x}},{{y}}) to depth {{depth}}",
-				"dug_found": "Dug ({{x}},{{y}}) to depth {{depth}}, found {{item}}",
-				"dug_up": "Dug up {{item}}",
-				"dug_hole": "Dug a hole",
+				"dig": "Dug{{where}}{{found}}",
+				"dig_site": " ({{x}},{{y}}) depth {{depth}}",
+				"dig_treasure": " · {{item}}",
 				"npc_dialog": "{{npc}}: {{dialog}}",
 				"emote": "Emote"
 			}
