@@ -10,6 +10,7 @@ import { deriveFinalRank, ensureReplayTrailer, loadReplay, type ReplaySummary } 
 import type { ReplayFrame, ReplayManifest } from "./replay-room"
 import type GameState from "../../../rooms/states/game-state"
 import { Transfer } from "../../../types"
+import { Passive } from "../../../types/enum/Passive"
 
 export type { ReplayFileInfo } from "./recorder-worker-core"
 
@@ -83,8 +84,11 @@ function captureSummary(): ReplaySummary | undefined {
     if (!player) return undefined
     const team: ReplaySummary["team"] = []
     player.board?.forEach((p) => {
-      // deployed units only (bench sits at positionY 0); index/shiny drive the portrait, name the tooltip
-      if (p.positionY > 0) team.push({ name: p.name, index: p.index, shiny: p.shiny || undefined })
+      // deployed units only (bench sits at positionY 0), excluding INANIMATE pillars (Conkeldurr's
+      // wood/iron/concrete) — mirrors the game's own after-game team filter (game.tsx AfterGame builder),
+      // which drops them (doesCountForTeamSize === false). index/shiny drive the portrait, name the tooltip.
+      if (p.positionY > 0 && p.passive !== Passive.INANIMATE)
+        team.push({ name: p.name, index: p.index, shiny: p.shiny || undefined })
     })
     const summary: ReplaySummary = {}
     // player.rank is stale for a POV who LEFT before being eliminated (the surrender rank is assigned server-
