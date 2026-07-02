@@ -203,8 +203,17 @@ export function createFlushController(deps: FlushDeps) {
     return tally.get(roomId)?.recordedAt
   }
 
-  /** Drop a finished room's in-flight/tally state (called when returning to the lobby). */
+  /** Drop a finished room's in-flight/tally state (called when returning to the lobby). Settles any batch
+   *  still awaiting an ack FIRST (mirror onWorkerError): a parked flushImpl is `await settled`, so dropping
+   *  the batch without settling leaves that promise pending forever → flushChain wedges and every later
+   *  flush/drain (this room and the next game's) silently never runs. */
   function forget(roomId: string): void {
+    const b = inFlight.get(roomId)
+    if (b) {
+      const settle = b.settle
+      b.settle = undefined
+      settle?.(false)
+    }
     inFlight.delete(roomId)
     tally.delete(roomId)
   }

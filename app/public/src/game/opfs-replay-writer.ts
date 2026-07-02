@@ -1,4 +1,4 @@
-import { encodeFrameV1, encodeHeaderV1, encodeReplayTrailer, type ReplaySummary } from "./replay-format"
+import { encodeFrameV1, encodeHeaderV1, encodeReplayTrailer, trailerByteLength, type ReplaySummary } from "./replay-format"
 import type { ReplayFrame, ReplayManifest } from "./replay-room"
 
 // Streams a v1 binary `.colreplay` to a file as frames arrive — the write side of the OPFS worker
@@ -26,7 +26,15 @@ export interface ReplayFileHandle {
   /** Shrink the file back to `newSize` bytes — used to roll back a failed batch write so the file is never
    *  left with a half-written record. Optional: FileSystemSyncAccessHandle has it; older fakes may not. */
   truncate?(newSize: number): void
+  /** Read up to `buffer.length` bytes at `opts.at` (default 0); returns bytes read. Optional: the real OPFS
+   *  FileSystemSyncAccessHandle has it (the worker's ReplayReadWriteHandle exposes it); older fakes may not.
+   *  Used only on resume, to detect + strip an EOF trailer before appending. */
+  read?(buffer: Uint8Array, opts?: { at?: number }): number
 }
+
+// Bounded tail read on resume: large enough to hold any real match-summary trailer (a full POV team + name is
+// well under 1 KB), so parseTrailerFooter can find the footer without reading a whole multi-MB file.
+const RESUME_TAIL_SCAN = 64 * 1024
 
 export type ReplayWriterMeta = Pick<ReplayManifest, "game" | "room" | "viewerUid" | "recordedAt">
 
@@ -50,10 +58,42 @@ export class ReplayFileWriter {
       this.offset = header.length
       this.resumed = false
     } else {
-      // Reconnect after a reload reopened the same roomId file — append past what's already there.
-      this.offset = size
+      // Reconnect reopened the same roomId file — append past what's already there. But if the file was
+      // SEALED with an EOF match-summary trailer (written on the prior lobby-return close), strip it FIRST:
+      // appending frames after the trailer yields [header][frames][TRAILER][more frames], and the decoder
+      // bounds the frame region by the trailer footer at EOF — so once more frames follow, the tail is no
+      // longer "CLTR", the trailer is missed, and the frame loop runs into the summary JSON ("unknown frame
+      // kind") and loses the whole post-reconnect half of the match.
+      this.offset = this.stripResumeTrailer(size)
       this.resumed = true
     }
+  }
+
+  /** On resume, detect a match-summary trailer at EOF and truncate it off, returning the offset to append at
+   *  (the file size, minus the trailer if one was stripped). Best-effort: needs both handle.read (to detect)
+   *  and handle.truncate (to strip); the real OPFS sync handle has both. Without either, or on an IO error,
+   *  it leaves the file unchanged — the common reload path (fresh file, no trailer) is unaffected. */
+  private stripResumeTrailer(size: number): number {
+    if (!this.handle.read || !this.handle.truncate) return size
+    const tailLen = Math.min(size, RESUME_TAIL_SCAN)
+    const tail = new Uint8Array(tailLen)
+    let got: number
+    try {
+      got = this.handle.read(tail, { at: size - tailLen })
+    } catch (e) {
+      console.error("[colreplay] resume tail read failed; appending without trailer strip", e)
+      return size
+    }
+    const trailerLen = trailerByteLength(tail.subarray(0, got))
+    if (trailerLen == null) return size
+    const newSize = size - trailerLen
+    try {
+      this.handle.truncate(newSize)
+    } catch (e) {
+      console.error("[colreplay] resume trailer truncate failed; appending without trailer strip", e)
+      return size
+    }
+    return newSize
   }
 
   /** Encode one frame and append it at the running offset. */

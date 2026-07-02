@@ -85,17 +85,24 @@ const core = createRecorderWorker({
   },
   async prune(keep, protect) {
     const dir = await replaysDir()
+    const protectName = `${protect}.colreplay`
     const entries: { name: string; mtime: number }[] = []
     const iter = dir as unknown as {
       entries(): AsyncIterable<[string, FileSystemHandle]>
     }
     for await (const [name, handle] of iter.entries()) {
       if (!name.endsWith(".colreplay") || handle.kind !== "file") continue
+      // Exclude the in-progress recording BY NAME so it's never a prune candidate. The old code relied on
+      // getFile() throwing for the exclusively-locked active handle to keep it out of `entries` — but that
+      // behavior is unspecified/browser-version-dependent. If getFile() succeeded, the just-created active
+      // file (newest mtime) took the first `keep` slot, so only keep−1 SEALED files survived (and at keep=1
+      // the previous game could be deleted the moment a new one started). `keep` counts SEALED files only.
+      if (name === protectName) continue
       try {
         const file = await (handle as FileSystemFileHandle).getFile()
         entries.push({ name, mtime: file.lastModified })
       } catch {
-        // a file held open by the active sync handle may be unreadable here — skip (it's the protected one)
+        // a file held open by another sync handle may be unreadable here — skip it (prunes next time)
       }
     }
     const keepNames = new Set(
@@ -104,7 +111,7 @@ const core = createRecorderWorker({
         .slice(0, keep)
         .map((e) => e.name)
     )
-    keepNames.add(`${protect}.colreplay`)
+    // protectName was never added to `entries`, so it can't be deleted below — no explicit re-add needed.
     for (const e of entries) {
       if (!keepNames.has(e.name)) {
         try {

@@ -159,28 +159,35 @@ export default function Replay() {
   // the GameStore (clears the spectated player's stale shop/board/players), and drops the dead
   // ReplayRoom from rooms.game. Without this, replay state leaks into the next real match.
   useEffect(
-    () => () => {
-      aliveRef.current = false // stop a deferred index build (loadManifest) from booting into this torn-down page
-      // Restore the real uid. Prefer the captured Redux identity (keeps the real displayName); fall back
-      // to firebase.auth().currentUser — the replay only ever overwrites the Redux uid, never firebase —
-      // so the restore can't be defeated even if the early capture missed a not-yet-resolved auth.
-      const captured = realIdentity.current
-      const fbUser = firebase.auth().currentUser
-      const real = captured?.uid
-        ? captured
-        : fbUser
-          ? { uid: fbUser.uid, displayName: fbUser.displayName ?? "" }
-          : null
-      if (real?.uid)
-        dispatch(
-          logIn({ uid: real.uid, displayName: real.displayName } as User)
-        )
-      dispatch(leaveGame(undefined)) // arity-0 reducer; RTK types it as needing an (ignored) payload
-      rooms.game = undefined
-      // Drop the dev/test hooks so they can't retain the last ReplayRoom (+ its whole transcript) or the
-      // game scene into the next live game.
-      delete (window as unknown as { __replayRoom?: ReplayRoom }).__replayRoom
-      delete (window as unknown as { __gameScene?: () => unknown }).__gameScene
+    () => {
+      // Re-arm on (re)mount. React 19 StrictMode runs setup→cleanup→setup on the initial mount; the cleanup
+      // below sets aliveRef=false, and since refs persist across the simulated remount, without re-arming here
+      // it would stay false and every deferred buildAndBoot (rAF→setTimeout) would silently bail → the viewer
+      // never boots under `npm run dev`. Setting it in setup (not just the useRef initial value) restores it.
+      aliveRef.current = true
+      return () => {
+        aliveRef.current = false // stop a deferred index build (loadManifest) from booting into this torn-down page
+        // Restore the real uid. Prefer the captured Redux identity (keeps the real displayName); fall back
+        // to firebase.auth().currentUser — the replay only ever overwrites the Redux uid, never firebase —
+        // so the restore can't be defeated even if the early capture missed a not-yet-resolved auth.
+        const captured = realIdentity.current
+        const fbUser = firebase.auth().currentUser
+        const real = captured?.uid
+          ? captured
+          : fbUser
+            ? { uid: fbUser.uid, displayName: fbUser.displayName ?? "" }
+            : null
+        if (real?.uid)
+          dispatch(
+            logIn({ uid: real.uid, displayName: real.displayName } as User)
+          )
+        dispatch(leaveGame(undefined)) // arity-0 reducer; RTK types it as needing an (ignored) payload
+        rooms.game = undefined
+        // Drop the dev/test hooks so they can't retain the last ReplayRoom (+ its whole transcript) or the
+        // game scene into the next live game.
+        delete (window as unknown as { __replayRoom?: ReplayRoom }).__replayRoom
+        delete (window as unknown as { __gameScene?: () => unknown }).__gameScene
+      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []

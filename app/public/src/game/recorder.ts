@@ -280,14 +280,25 @@ const serializePayload = (m: unknown): unknown =>
 // initial state arrive during client.joinById, BEFORE joinGame sets rooms.game, so an inclusion test
 // (this === rooms.game) would drop them. The game room object/serializer is never one of lobby/prep/after
 // (distinct instances, even mid-join), so excluding those can NEVER drop a game frame.
+// The ReplayRoom used during /replay playback (rooms.game, roomId "replay") holds its OWN SchemaSerializer
+// and decodes each recorded frame through it — i.e. through the SAME patched prototype methods. Without
+// excluding it, watching a replay re-buffers the whole decoded byte stream into stateCaptures (a per-frame
+// bytes.slice on the render thread) that flushRoom never drains for roomId "replay" → it's held until GC,
+// duplicating the replay in RAM and degrading the very viewer we ship. Resolve it ONLY when rooms.game is
+// actually the replay room, so this stays a DENYLIST entry (not an allowlist): during a real game join —
+// when the handshake + initial state arrive BEFORE joinGame sets rooms.game — replayRoom() is undefined and
+// excludes nothing, so the join frames are still captured (the c57da1eda allowlist trap avoided).
+const replayRoom = (): object | undefined =>
+  rooms.game?.roomId === "replay" ? rooms.game : undefined
 const isExcludedRoom = (room: object): boolean =>
-  room === rooms.lobby || room === rooms.preparation || room === rooms.after
+  room === rooms.lobby || room === rooms.preparation || room === rooms.after || room === replayRoom()
 const serializerOf = (room: object | undefined) =>
   (room as unknown as { serializer?: object } | undefined)?.serializer
 const isExcludedSerializer = (ser: object): boolean =>
   ser === serializerOf(rooms.lobby) ||
   ser === serializerOf(rooms.preparation) ||
-  ser === serializerOf(rooms.after)
+  ser === serializerOf(rooms.after) ||
+  ser === serializerOf(replayRoom())
 
 /** Install the inbound-stream taps. Idempotent; call once at app startup, before any game join. */
 export function installRecorder() {
@@ -298,6 +309,22 @@ export function installRecorder() {
     handshake: (b: Uint8Array, it?: { offset: number }) => unknown
     setState: (b: Uint8Array, it?: { offset: number }) => unknown
     patch: (b: Uint8Array, it?: { offset: number }) => unknown
+  }
+  // Assert the decode seam we tap is present before wrapping it. The taps monkey-patch a pinned SDK's
+  // prototype methods (@colyseus/sdk 0.17.x); a future SDK bump that renames or removes them would silently
+  // detach the taps (the try/catch swallows, recordings just stop, no failing test). Log once so that drift
+  // is visible instead of mysterious, and skip install rather than wrap undefined.
+  const R0 = Room.prototype as unknown as { dispatchMessage?: unknown }
+  if (
+    typeof S.handshake !== "function" ||
+    typeof S.setState !== "function" ||
+    typeof S.patch !== "function" ||
+    typeof R0.dispatchMessage !== "function"
+  ) {
+    console.error(
+      "[recorder] Colyseus decode seam not found (SchemaSerializer.handshake/setState/patch or Room.dispatchMessage) — recording disabled; the SDK likely changed its decode path."
+    )
+    return
   }
   const tap = (
     orig: (b: Uint8Array, it?: { offset: number }) => unknown,

@@ -11,7 +11,7 @@ import { SynergyTriggers } from "../../../config/game/synergies"
 import { BattleResult, GamePhaseState, PokemonActionState } from "../../../types/enum/Game"
 import { ItemRecipe } from "../../../types/enum/Item"
 import { Pkm, PkmDuos } from "../../../types/enum/Pokemon"
-import type { Synergy } from "../../../types/enum/Synergy"
+import { Synergy } from "../../../types/enum/Synergy"
 import type { ReplayFrame } from "./replay-room"
 import { type CombatFrameState, type EntitySnap, prettyName, scanFrameCombat } from "./replay-combat-scan"
 import type { PickOption, ReplayEventArgs } from "./replay-event-format"
@@ -279,7 +279,7 @@ const ROOM_BROADCAST_ABILITIES = new Set(["TIDAL_WAVE", "COMET_CRASH", "CURSE_EF
 function playerOwningUnit(state: GameState, unitId: string): string | undefined {
   let owner: string | undefined
   state.players?.forEach((p, uid) => {
-    if (!owner && (p as { board?: { get?: (id: string) => unknown } }).board?.get?.(unitId)) owner = uid
+    if (!owner && p.board?.get(unitId)) owner = uid
   })
   return owner
 }
@@ -289,12 +289,18 @@ function playerOwningUnit(state: GameState, unitId: string): string | undefined 
 // (positionY-1)·BOARD_WIDTH+positionX (game-commands.ts dig handler). The depth is incremented in a
 // deferred clock.setTimeout AFTER the broadcast, so at this frame groundHoles[index] is the PRE-dig
 // depth → the post-dig depth is min(it+1, 5) (Ground caps holes at 5; a dig only fires below max).
+// Only the GROUND hole-dig touches groundHoles: game-commands.ts digs one tile per GROUND-typed unit. The
+// Pachirisu berry-dig (passives.ts) ALSO broadcasts DIG but never touches groundHoles, so a depth read there
+// would be fabricated — return undefined for a non-Ground digger so its row renders "Dug up <item>" with no
+// bogus coordinate/depth.
 function digSite(state: GameState, uid: string, unitId: string): { x: number; y: number; depth: number } | undefined {
-  const unit = (state.players?.get(uid) as { board?: { get?: (id: string) => { positionX?: number; positionY?: number } } } | undefined)?.board?.get?.(unitId)
+  const player = state.players?.get(uid)
+  const unit = player?.board?.get(unitId)
   if (!unit || unit.positionX == null || unit.positionY == null) return undefined
+  if (!unit.types?.has(Synergy.GROUND)) return undefined
   const x = unit.positionX
   const y = unit.positionY
-  const holes = (state.players?.get(uid) as { groundHoles?: ArrayLike<number> } | undefined)?.groundHoles
+  const holes = player?.groundHoles
   const before = holes ? holes[(y - 1) * BOARD_WIDTH + x] ?? 0 : 0
   return { x, y, depth: Math.min(before + 1, 5) }
 }
@@ -341,7 +347,7 @@ function derivePlayerStateEvents(
   // --- current-frame reads (needed for the snapshot regardless of prev) ---
   const money = p.money
   const level = p.experienceManager?.level
-  const map = (p as { map?: string }).map
+  const map = p.map
   const scarves = p.scarvesItems ? [...(p.scarvesItems as Iterable<string>)] : []
   const shop = p.shop ? Array.from(p.shop as ArrayLike<string>) : []
   const board = new Map<string, string>()
@@ -478,7 +484,7 @@ function derivePlayerStateEvents(
         // non-POV player a real buy lands here too — we can't see the shop — so it reads as "Gained".)
         for (const [id, name] of added) {
           if (name === Pkm.EGG) {
-            const egg = p.board.get(id) as { evolution?: string; shiny?: boolean } | undefined
+            const egg = p.board.get(id)
             const hatchPkm = egg?.evolution && egg.evolution !== Pkm.DEFAULT ? egg.evolution : ""
             push("egg", hatchPkm ? { pkm: hatchPkm, golden: !!egg?.shiny } : {})
           } else if (p.board.get(id)?.action === PokemonActionState.FISH) {
@@ -722,9 +728,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         const pl = f.payload as {
           id?: string; skill?: string; positionX?: number; positionY?: number; targetX?: number; targetY?: number; x?: number; y?: number
         }
-        const pov = viewerUid
-          ? (state.players?.get(viewerUid) as { spectatedPlayerId?: string; alive?: boolean; hasLeftGame?: boolean } | undefined)
-          : undefined
+        const pov = viewerUid ? state.players?.get(viewerUid) : undefined
         const owner = pov?.spectatedPlayerId
         // Death/leave force `spectatedPlayerId` back to self (checkDeath / the onLeave handler) WITHOUT
         // resetting the server's broadcast filter (client.userData), which keeps pointing at the last
@@ -732,7 +736,9 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
         // reads self — tagging by `owner` would mis-file a scouted fight onto the POV (who has no fight of
         // their own). userData isn't in the transcript, so we can't recover which board it was → drop these
         // camera-scoped rows as foreign. A dead POV who re-spectates sets spectatedPlayerId ≠ self → kept.
-        const cameraSelfForced = owner === viewerUid && (pov?.alive === false || pov?.hasLeftGame === true)
+        // (hasLeftGame is server-only — no @type, never synced — so a left-but-alive POV is caught by the
+        // same spectatedPlayerId===self reset the onLeave handler applies, not by reading that flag.)
+        const cameraSelfForced = owner === viewerUid && pov?.alive === false
         if (f.type === "ABILITY") {
           // Only the caster: the ABILITY target (targetX/Y) is the caster's attack-enemy by default, so
           // it mis-names self/ally effects — the log drops it (the real target is the damage/heal row's).
@@ -765,14 +771,21 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       if (viewerUid) {
         if (f.type === "SHOW_EMOTE") {
           const id = (f.payload as { id?: string })?.id
+          // Fail-hidden like BOARD_EVENT: an unresolved owner must NOT fall through to `uid: owner ?? viewerUid`
+          // (which would attribute another player's emote to the POV) — hide the frame instead.
           if (id) combatUnits[i] = { owner: id }
+          else foreignFrames.push(i)
         } else if (hasState && (f.type === "DIG" || f.type === "COOK")) {
           const pid = (f.payload as { pokemonId?: string })?.pokemonId
           const owner = pid ? playerOwningUnit(ser.getState(), pid) : undefined
-          if (owner) combatUnits[i] = { owner }
-          if (f.type === "DIG" && pid) {
-            const site = digSite(ser.getState(), owner ?? viewerUid, pid)
-            if (site) digInfo[i] = site
+          if (owner) {
+            combatUnits[i] = { owner }
+            if (f.type === "DIG" && pid) {
+              const site = digSite(ser.getState(), owner, pid)
+              if (site) digInfo[i] = site
+            }
+          } else {
+            foreignFrames.push(i) // owner unresolved → hide, don't mis-attribute to the POV
           }
         } else if (hasState && f.type === "BOARD_EVENT") {
           const bp = f.payload as { simulationId?: string; x?: number; y?: number }
@@ -817,14 +830,14 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
 
     // Town encounter — a shared, game-level NPC (state.townEncounter), not POV-specific. Its rewards
     // land in player state separately (items / money / etc.), captured by those diffs.
-    const te = (state as { townEncounter?: string | null }).townEncounter ?? null
+    const te = state.townEncounter ?? null
     if (prevTownEncounter !== undefined && te && te !== prevTownEncounter) {
       actions.push({ t: f.t, type: "town", a: { npc: te } })
     }
     prevTownEncounter = te
 
     // Special game rule (scribble modes) — set once at game start, never changes; log its first sighting.
-    const rule = (state as { specialGameRule?: string | null }).specialGameRule ?? null
+    const rule = state.specialGameRule ?? null
     if (rule && rule !== prevRule) {
       actions.push({ t: f.t, type: "rule", a: { rule } })
     }
@@ -888,7 +901,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
     const deriveCtx: DeriveCtx = {
       t: f.t,
       specialGameRule: state.specialGameRule,
-      shinyEncounter: !!(state as { shinyEncounter?: boolean }).shinyEncounter
+      shinyEncounter: !!state.shinyEncounter
     }
     state.players?.forEach((p, uid) => {
       const { events: playerEvents, snap } = derivePlayerStateEvents(p, prevByPlayer.get(uid), deriveCtx)

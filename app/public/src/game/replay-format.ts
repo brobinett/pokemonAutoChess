@@ -268,6 +268,14 @@ export function readReplayTrailer(buf: Uint8Array): ReplaySummary | null {
   return parseTrailerFooter(buf)?.summary ?? null
 }
 
+/** Total byte length of the EOF match-summary trailer in `buf` (summary body + footer), or null when there
+ *  is no valid trailer. Used on resume (opfs-replay-writer) to truncate a sealed file's trailer off before
+ *  appending reconnect frames — otherwise they land past the trailer and the decoder mis-bounds the frame
+ *  region. `buf` may be the whole file or a tail slice big enough to hold the trailer. */
+export function trailerByteLength(buf: Uint8Array): number | null {
+  return parseTrailerFooter(buf)?.byteLength ?? null
+}
+
 /** Ensure a v1 `.colreplay` buffer carries a match-summary footer: append one for `summary` when the buffer
  *  doesn't already end with a trailer, else return it UNCHANGED. Used by the after-game download, whose source
  *  is the still-open OPFS file — that file only gets its trailer written at close (lobby-return), so a download

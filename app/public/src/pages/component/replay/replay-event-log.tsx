@@ -442,11 +442,21 @@ export default function ReplayEventLog({
     else if (autoBox) el.style.width = `${autoBox.width}px`
     if (box.h) el.style.height = `${box.h}px`
     else if (autoBox) el.style.height = `${autoBox.height}px`
+    // ResizeObserver.observe() delivers an INITIAL callback immediately. That first fire reflects the
+    // programmatic size we just applied above (autoBox default or the restored box), NOT a user resize —
+    // persisting it would freeze the default into localStorage as if dragged, after which readBox() wins over
+    // the recomputed autoBox and the panel stops adapting to window resizes (and poisons fullyPlaced on later
+    // mounts). So skip persistence on the first callback; still sync the viewport height on every fire.
+    let initialFire = true
     const ro = new ResizeObserver(() => {
       // keep the virtualization viewport in sync with the live panel height, or a resize leaves the new
       // space below the last windowed row blank until something else re-measures (a filter toggle).
       const lh = listRef.current?.clientHeight
       if (lh) setViewportH(lh)
+      if (initialFire) {
+        initialFire = false
+        return
+      }
       try {
         const b = JSON.parse(localStorage.getItem(BOX_KEY) || "{}")
         localStorage.setItem(BOX_KEY, JSON.stringify({ ...b, w: el.offsetWidth, h: el.offsetHeight }))
