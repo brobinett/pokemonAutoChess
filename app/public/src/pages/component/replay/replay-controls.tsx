@@ -6,6 +6,7 @@ import {
   prevPhase,
   prevStage,
   segmentAt,
+  segmentBandKind,
   type ReplayIndex
 } from "../../../game/replay-index"
 import type { ReplayRoom } from "../../../game/replay-room"
@@ -231,15 +232,16 @@ export default function ReplayControls({
             onSeek(base + ((e.clientX - r.left) / r.width) * span)
           }}
         >
-          {/* Phase-colored bands: the match rhythm at a glance (prep vs fight vs town). Behind the fill
-              and markers; the track's own click handler still seeks within them. */}
+          {/* Stage-typed bands: the match rhythm at a glance, colored to match the wiki "Stages" page —
+              PvE (red) vs PvP (grey) fights, portal (yellow) vs item-carousel (green) towns, prep neutral
+              (see segmentBandKind). Behind the fill and markers; the track's own click handler still seeks. */}
           {index?.segments.map((s, i) => {
             const start = frac(s.t)
             const end = i + 1 < index.segments.length ? frac(index.segments[i + 1].t) : 1
             return (
               <div
                 key={`band-${i}`}
-                className={`rc-band ${s.phaseLabel.toLowerCase()}`}
+                className={`rc-band ${segmentBandKind(s)}`}
                 style={{ left: `${start * 100}%`, width: `${Math.max(0, end - start) * 100}%` }}
               />
             )

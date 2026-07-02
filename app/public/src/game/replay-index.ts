@@ -6,6 +6,7 @@ import { getPokemonData } from "../../../models/precomputed/precomputed-pokemon-
 import { getLevelUpCost } from "../../../models/colyseus-models/experience-manager"
 import { PVEStages } from "../../../models/pve-stages"
 import { BOARD_HEIGHT, BOARD_WIDTH } from "../../../config/game/board"
+import { PortalCarouselStages } from "../../../config/game/stages"
 import { SynergyTriggers } from "../../../config/game/synergies"
 import { BattleResult, GamePhaseState, PokemonActionState } from "../../../types/enum/Game"
 import { ItemRecipe } from "../../../types/enum/Item"
@@ -46,6 +47,19 @@ export interface ReplaySegment {
   stage: number
   phase: number // GamePhaseState
   phaseLabel: string
+}
+
+// Timeline band colour class for a segment, matching the wiki "Stages" page taxonomy
+// (app/pages/component/wiki/wiki-stages.css --stage-*-color): a FIGHT is "pve" on a scripted PvE stage
+// (PVEStages) else "pvp"; a TOWN is "portal" on the starter/unique/legendary carousels
+// (PortalCarouselStages = [0,10,20]) else "carousel" (item carousels); PICK stays neutral ("prep").
+// Add-pick stages (AdditionalPicksStages) are deliberately NOT distinguished — they aren't their own
+// phase (they ride a normal PICK), so they never surface as a segment. Kept as a pure helper so the
+// scrubber and any future consumer classify segments identically.
+export function segmentBandKind(seg: ReplaySegment): "prep" | "pve" | "pvp" | "carousel" | "portal" {
+  if (seg.phase === GamePhaseState.FIGHT) return PVEStages[seg.stage] ? "pve" : "pvp"
+  if (seg.phase === GamePhaseState.TOWN) return PortalCarouselStages.includes(seg.stage) ? "portal" : "carousel"
+  return "prep"
 }
 export interface ReplayStageMark {
   stage: number

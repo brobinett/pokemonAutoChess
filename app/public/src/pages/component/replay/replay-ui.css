@@ -4,10 +4,11 @@
 
 /* ── Playback controls bar ─────────────────────────────────────────────────────────────────── */
 .replay-controls {
-  /* One shared height for EVERY control (buttons, frame-step, speed). MUST be absolute (px), not em: the
-     transport buttons carry different font-sizes (rc-play 120%, rc-skip 110%) for icon scale, and an `em`
-     height would resolve against each button's own font-size → play/skip ended up taller than ±1/speed. */
-  --rc-ctrl-h: 28px;
+  /* One shared height for EVERY control (buttons, frame-step, speed). It resolves to 2× the BAR's font-size
+     because all controls now inherit that font-size — none override it (the transport icons scale via
+     .rc-icon width, not per-button font-size). So the whole bar tracks the game's responsive body font-size
+     (index.css bumps it 12px→22px across widths) instead of being pinned to one pixel size. */
+  --rc-ctrl-h: 2em;
   position: fixed;
   z-index: 1000;
   display: flex;
@@ -15,11 +16,12 @@
   align-items: stretch;
   gap: 0.4em;
   padding: 0.4em 0.6em 0.5em;
-  /* A wide, fixed footprint so the timeline reads as "the whole length" with the transport centered under
-     it. Clamped to the viewport so it never overflows on a narrow window. */
-  width: min(46vw, 720px);
+  /* A wide footprint so the timeline reads as "the whole length" with the transport centered under it. The
+     target width is em-based (52em) so it grows with the bar's font-size at high-res — a fixed px cap left
+     the content crowded once the font scaled up. The 46vw keeps it to ~half the screen on wide monitors. */
+  width: min(46vw, 52em);
   min-width: 360px;
-  font-size: 14px;
+  font-size: 0.875em; /* slightly smaller than the surrounding UI, but scales WITH it (was a fixed 14px) */
   user-select: none;
 }
 
@@ -53,7 +55,7 @@
 .replay-controls .rc-handle {
   cursor: move;
   color: var(--color-fg-secondary);
-  font-size: 18px;
+  font-size: 1.3em;
   line-height: 1;
   padding: 0 0.15em;
   letter-spacing: -2px;
@@ -70,7 +72,7 @@
   border-radius: 8px;
   background: var(--color-bg-secondary);
   box-shadow: inset -3px -3px 0 0 var(--color-bg-tertiary);
-  font-size: 11px;
+  font-size: 0.78em;
   font-weight: 700;
   letter-spacing: 0.5px;
   line-height: 1;
@@ -101,21 +103,26 @@
   justify-content: center;
 }
 
-/* inline SVG transport icons — 1em box, inherit the button's text color (incl. the disabled dim) so they
- * scale with each button's font-size and read as one consistent set (replaces the mismatched Unicode glyphs) */
+/* inline SVG transport icons — inherit the button's text color (incl. the disabled dim). Sized here (not via
+ * per-button font-size) so every button keeps the bar's shared font-size and therefore the same 2em height;
+ * the icon glyph is what varies between play and skip, not the box. */
 .replay-controls .rc-icon {
-  width: 1em;
-  height: 1em;
+  width: 1.1em;
+  height: 1.1em;
   fill: currentColor;
   display: block;
 }
+/* play is the primary action — a slightly larger glyph + box */
+.replay-controls .bubbly.rc-play .rc-icon {
+  width: 1.2em;
+  height: 1.2em;
+}
 .replay-controls .bubbly.rc-play {
-  font-size: 120%;
+  min-width: 2.4em;
 }
 
 /* skip-by-phase/stage buttons: same chunky .bubbly, a touch narrower than play; dimmed when at an end */
 .replay-controls .bubbly.rc-skip {
-  font-size: 110%;
   min-width: 1.8em;
 }
 .replay-controls .bubbly.rc-skip:disabled {
@@ -165,7 +172,7 @@
   align-items: baseline;
   white-space: nowrap;
   padding: 2px 7px;
-  font-size: 11px;
+  font-size: 0.78em;
   background: var(--color-bg-input);
   border: var(--border-thin);
   border-radius: 6px;
@@ -195,20 +202,29 @@
   pointer-events: none;
 }
 
-/* Phase bands: the match rhythm at a glance. Prep is the neutral track; fights warm, town cool. */
+/* Stage-typed bands: the match rhythm at a glance, colored to match the wiki "Stages" page palette
+ * (wiki-stages.css --stage-*-color). Prep is the neutral base track (no band). PvE fights and the
+ * portal towns (starter/unique/legendary picks) are the loud landmarks; PvP fights and item carousels
+ * are the quieter recurring rounds. */
 .replay-controls .rc-band {
   position: absolute;
   top: 0;
   bottom: 0;
   pointer-events: none;
 }
-.replay-controls .rc-band.fight {
-  background: rgba(232, 18, 18, 0.32);
+.replay-controls .rc-band.pve {
+  background: rgba(140, 32, 34, 0.62); /* wiki #8c2022 */
 }
-.replay-controls .rc-band.town {
-  background: rgba(17, 149, 236, 0.3);
+.replay-controls .rc-band.pvp {
+  background: rgba(120, 126, 145, 0.5); /* wiki battle #666, lifted toward the track's blue-grey so it stays visible on it */
 }
-/* .pick (prep) intentionally has no band — it reads as the base track colour. */
+.replay-controls .rc-band.carousel {
+  background: rgba(74, 165, 46, 0.5); /* wiki #4aa52e */
+}
+.replay-controls .rc-band.portal {
+  background: rgba(230, 203, 73, 0.62); /* wiki #e6cb49 */
+}
+/* .prep (PICK) intentionally has no band — it reads as the base track colour. */
 
 /* Playhead: where we are now — a bright gold line + a knob on top so it reads clearly against the
  * red/blue phase bands (the plain 2px white line was easy to lose). */
@@ -280,7 +296,7 @@
  * as a sibling control at the SAME scale, not a larger foreign form input; replaces the old 4-button row.
  * FIXED width so the longest label (1/8×) never widens the bar; labels are centered. */
 .replay-controls .rc-speed-select {
-  font-size: 110%;
+  font-size: 100%;
   height: var(--rc-ctrl-h); /* same fixed height as the buttons — no longer taller than the transport */
   box-sizing: border-box;
   color: #fff;
