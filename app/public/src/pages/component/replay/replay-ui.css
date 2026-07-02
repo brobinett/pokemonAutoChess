@@ -4,14 +4,49 @@
 
 /* ── Playback controls bar ─────────────────────────────────────────────────────────────────── */
 .replay-controls {
+  /* One shared height for EVERY control (buttons, frame-step, speed). MUST be absolute (px), not em: the
+     transport buttons carry different font-sizes (rc-play 120%, rc-skip 110%) for icon scale, and an `em`
+     height would resolve against each button's own font-size → play/skip ended up taller than ±1/speed. */
+  --rc-ctrl-h: 28px;
   position: fixed;
   z-index: 1000;
   display: flex;
-  align-items: center;
-  gap: 0.5em;
-  padding: 0.3em 0.5em;
+  flex-direction: column; /* row 1 = full-width timeline, row 2 = the centered control bar */
+  align-items: stretch;
+  gap: 0.4em;
+  padding: 0.4em 0.6em 0.5em;
+  /* A wide, fixed footprint so the timeline reads as "the whole length" with the transport centered under
+     it. Clamped to the viewport so it never overflows on a narrow window. */
+  width: min(46vw, 720px);
+  min-width: 360px;
   font-size: 14px;
   user-select: none;
+}
+
+/* Row 2 — status pills (left) · transport (center) · tools (right). 1fr/auto/1fr keeps the transport
+   optically centered regardless of the side groups' widths. */
+.replay-controls .rc-bar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 0.5em;
+}
+.replay-controls .rc-side {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  min-width: 0; /* let a 1fr side shrink instead of forcing the center off-middle */
+}
+.replay-controls .rc-left {
+  justify-content: flex-start;
+}
+.replay-controls .rc-right {
+  justify-content: flex-end;
+}
+.replay-controls .rc-center {
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
 }
 
 /* grip the bar is dragged by */
@@ -22,13 +57,40 @@
   line-height: 1;
   padding: 0 0.15em;
   letter-spacing: -2px;
+  flex: none;
+}
+
+/* Small PAC-style HUD pills for the time + stage·phase readouts (echoes the life/gold displays). */
+.replay-controls .rc-badge {
+  height: var(--rc-ctrl-h);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.55em;
+  border: var(--border-thin);
+  border-radius: 8px;
+  background: var(--color-bg-secondary);
+  box-shadow: inset -3px -3px 0 0 var(--color-bg-tertiary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--color-fg-secondary);
+}
+.replay-controls .rc-badge.rc-time {
+  font-variant-numeric: tabular-nums;
+}
+.replay-controls .rc-badge.rc-pos.ended {
+  color: var(--color-fg-gold);
 }
 
 /* compact the chunky .bubbly buttons down to control-bar size; flex-center so the inline SVG icons (and the
  * ±1 / ☰ text) sit centered regardless of glyph metrics */
 .replay-controls .bubbly {
   font-size: 100%;
-  padding: 0.1em 0.45em 0.25em;
+  height: var(--rc-ctrl-h); /* fixed height → the frame-step (±1) and every icon button match exactly */
+  box-sizing: border-box;
+  padding: 0 0.45em; /* no vertical padding: the fixed height + flex-center owns the vertical metrics */
   border-radius: 8px;
   box-shadow:
     inset -4px -4px 0px 0px var(--color-bg-tertiary),
@@ -62,29 +124,18 @@
   box-shadow: var(--shadow-clickable);
 }
 
-.replay-controls .rc-time {
-  font-variant-numeric: tabular-nums;
-  color: var(--color-fg-secondary);
-}
-
 /* wraps the track so the hover tooltip can sit above it without being clipped by the track's overflow.
- * Column so the current-position chip (rc-pos) stacks directly under the timeline; the hover tip is
- * anchored bottom:100% of the wrap, whose top edge is the track's top, so it still floats over the track. */
+ * Full width (row 1) — the track spans the whole bar; the hover tip is anchored bottom:100% of the wrap so
+ * it still floats over the track. */
 .replay-controls .rc-track-wrap {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
+  width: 100%;
 }
 
-/* With the 4 speed buttons collapsed into one dropdown and the two end-cap times moved into a single chip
- * below the track, the timeline takes the freed width: a wider vw than the old 18vw, so the bar keeps its
- * length with a longer, more scrubbable track. */
+/* The timeline spans the full bar width so it reads as "the whole length"; the transport centers under it. */
 .replay-controls .rc-track {
   position: relative;
-  width: 32vw;
-  min-width: 210px;
+  width: 100%;
   height: 14px;
   background: var(--color-bg-tertiary);
   border: var(--border-thin);
@@ -230,12 +281,14 @@
  * FIXED width so the longest label (1/8×) never widens the bar; labels are centered. */
 .replay-controls .rc-speed-select {
   font-size: 110%;
+  height: var(--rc-ctrl-h); /* same fixed height as the buttons — no longer taller than the transport */
+  box-sizing: border-box;
   color: #fff;
   background: var(--color-bg-secondary);
   border: var(--border-thin);
   border-radius: 8px;
   box-shadow: inset -4px -4px 0 0 var(--color-bg-tertiary), var(--shadow-clickable);
-  padding: 0.1em 0.4em 0.25em;
+  padding: 0 0.4em;
   width: 4.2em;
   text-align: center;
   text-align-last: center;
@@ -244,33 +297,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* frame-step cluster (shown when paused) */
+/* frame-step cluster (±1) */
 .replay-controls .rc-step {
   display: flex;
   gap: 0.25em;
-}
-
-/* row under the timeline: elapsed/total time on the left, current stage·phase chip on the right (both
- * docked here instead of floating at the bar's ends) */
-.replay-controls .rc-subbar {
-  width: 100%;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.5em;
-}
-
-/* current stage·phase chip, docked under the timeline (doubles as the REPLAY / ended badge) */
-.replay-controls .rc-pos {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  color: var(--color-fg-secondary);
-  line-height: 1;
-  white-space: nowrap;
-}
-.replay-controls .rc-pos.ended {
-  color: var(--color-fg-gold);
 }
 
 /* ── After-game download button (/after) ───────────────────────────────────────────────────── */

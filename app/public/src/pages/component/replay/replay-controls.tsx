@@ -220,94 +220,48 @@ export default function ReplayControls({
 
   return (
     <div ref={barRef} className="replay-controls my-container" style={posStyle}>
-      <span className="rc-handle" title={t("replay.controls.drag")} onMouseDown={onHandleDown}>
-        ⠿
-      </span>
-
-      {targets && (
-        <>
-          <button className="bubbly rc-skip" title={t("replay.controls.prev_stage")} disabled={targets.prevStage == null} onClick={() => go(prevStage)}>
-            <RcIcon d={IC.skipPrevTri} d2={IC.skipPrevBar} />
-          </button>
-          <button className="bubbly rc-skip" title={t("replay.controls.prev_phase")} disabled={targets.prevPhase == null} onClick={() => go(prevPhase)}>
-            <RcIcon d={IC.triLeft} />
-          </button>
-        </>
-      )}
-
-      <button
-        className="bubbly blue rc-play"
-        title={room.ended ? t("replay.controls.restart") : room.paused ? t("replay.controls.play") : t("replay.controls.pause")}
-        onClick={() => (room.ended ? onRestart() : room.togglePause())}
-      >
-        {room.ended ? <RcIcon d={IC.restart} /> : room.paused ? <RcIcon d={IC.play} /> : <RcIcon d={IC.pauseL} d2={IC.pauseR} />}
-      </button>
-
-      {targets && (
-        <>
-          <button className="bubbly rc-skip" title={t("replay.controls.next_phase")} disabled={targets.nextPhase == null} onClick={() => go(nextPhase)}>
-            <RcIcon d={IC.triRight} />
-          </button>
-          <button className="bubbly rc-skip" title={t("replay.controls.next_stage")} disabled={targets.nextStage == null} onClick={() => go(nextStage)}>
-            <RcIcon d={IC.skipNextTri} d2={IC.skipNextBar} />
-          </button>
-        </>
-      )}
-
-      {/* Frame-step — the inspect-a-fight-tick-by-tick tool. Always present so toggling play/pause never
-          resizes the bar (its width is constant). While playing, the step handlers pause first, then
-          advance/rewind one frame. Back is a reboot-seek (the decoder is forward-only) so it's a touch
-          slower than forward. */}
-      <span className="rc-step">
-        <button className="bubbly rc-skip" title={t("replay.controls.step_back")} onClick={onStepBackward}>
-          −1
-        </button>
-        <button className="bubbly rc-skip" title={t("replay.controls.step_forward")} onClick={onStepForward}>
-          +1
-        </button>
-      </span>
-
+      {/* Row 1 — the timeline spans the full width of the bar; everything else sits centered below it. */}
       <div className="rc-track-wrap">
-      <div
-        className="rc-track"
-        onMouseMove={index ? onTrackHover : undefined}
-        onMouseLeave={() => setHover(null)}
-        onClick={(e) => {
-          const r = e.currentTarget.getBoundingClientRect()
-          onSeek(base + ((e.clientX - r.left) / r.width) * span)
-        }}
-      >
-        {/* Phase-colored bands: the match rhythm at a glance (prep vs fight vs town). Behind the fill
-            and markers; the track's own click handler still seeks within them. */}
-        {index?.segments.map((s, i) => {
-          const start = frac(s.t)
-          const end = i + 1 < index.segments.length ? frac(index.segments[i + 1].t) : 1
-          return (
-            <div
-              key={`band-${i}`}
-              className={`rc-band ${s.phaseLabel.toLowerCase()}`}
-              style={{ left: `${start * 100}%`, width: `${Math.max(0, end - start) * 100}%` }}
+        <div
+          className="rc-track"
+          onMouseMove={index ? onTrackHover : undefined}
+          onMouseLeave={() => setHover(null)}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect()
+            onSeek(base + ((e.clientX - r.left) / r.width) * span)
+          }}
+        >
+          {/* Phase-colored bands: the match rhythm at a glance (prep vs fight vs town). Behind the fill
+              and markers; the track's own click handler still seeks within them. */}
+          {index?.segments.map((s, i) => {
+            const start = frac(s.t)
+            const end = i + 1 < index.segments.length ? frac(index.segments[i + 1].t) : 1
+            return (
+              <div
+                key={`band-${i}`}
+                className={`rc-band ${s.phaseLabel.toLowerCase()}`}
+                style={{ left: `${start * 100}%`, width: `${Math.max(0, end - start) * 100}%` }}
+              />
+            )
+          })}
+          <div className="rc-fill" style={{ width: `${pct}%` }} />
+          <div className="rc-playhead" style={{ left: `${pct}%` }} />
+          {/* Stage-start ticks only — the per-phase ticks were visual clutter. Click-to-seek to the stage;
+              finer seeking is the hover tooltip + the ‹ › ⏮ ⏭ skip buttons. stopPropagation so the tick
+              jumps to the boundary exactly, not the coarse track click. */}
+          {index?.stages.map((st, i) => (
+            <button
+              key={`stage-${i}`}
+              className="rc-mark stage"
+              style={{ left: `${frac(st.t) * 100}%` }}
+              onClick={(e) => {
+                e.stopPropagation()
+                onSeek(st.t)
+              }}
             />
-          )
-        })}
-        <div className="rc-fill" style={{ width: `${pct}%` }} />
-        <div className="rc-playhead" style={{ left: `${pct}%` }} />
-        {/* Stage-start ticks only — the per-phase ticks were visual clutter. Click-to-seek to the stage;
-            finer seeking is the hover tooltip + the ‹ › ⏮ ⏭ skip buttons. stopPropagation so the tick
-            jumps to the boundary exactly, not the coarse track click. */}
-        {index?.stages.map((st, i) => (
-          <button
-            key={`stage-${i}`}
-            className="rc-mark stage"
-            style={{ left: `${frac(st.t) * 100}%` }}
-            onClick={(e) => {
-              e.stopPropagation()
-              onSeek(st.t)
-            }}
-          />
-        ))}
-        {hover && <div className="rc-hover-line" style={{ left: `${hover.xPct}%` }} />}
-      </div>
+          ))}
+          {hover && <div className="rc-hover-line" style={{ left: `${hover.xPct}%` }} />}
+        </div>
         {hover &&
           (() => {
             const seg = index ? segmentAt(index, hover.ms) : null
@@ -322,42 +276,97 @@ export default function ReplayControls({
               </div>
             )
           })()}
-        {/* Under the timeline: the elapsed/total time and the current position (stage · phase), tracking
-            the playhead in place rather than floating at the bar's ends. rc-pos doubles as the REPLAY /
-            Replay-ended badge. */}
-        <div className="rc-subbar">
-          <span className="rc-time">
+      </div>
+
+      {/* Row 2 — a centered 3-column bar: status badges (left) · transport (center) · tools (right).
+          The center cell is `auto` between two equal `1fr` sides, so the transport cluster stays pinned to
+          the middle no matter how wide the badges/tools get (no recentering when the stage·phase text or
+          speed label changes width). */}
+      <div className="rc-bar">
+        <div className="rc-side rc-left">
+          <span className="rc-handle" title={t("replay.controls.drag")} onMouseDown={onHandleDown}>
+            ⠿
+          </span>
+          {/* Time + stage·phase as small PAC-style HUD pills (like the life/gold readouts). rc-pos doubles
+              as the REPLAY / Replay-ended badge. */}
+          <span className="rc-badge rc-time">
             {fmt(elapsed)}/{fmt(span)}
           </span>
-          <div className={`rc-pos${room.ended ? " ended" : ""}`}>
+          <span className={`rc-badge rc-pos${room.ended ? " ended" : ""}`}>
             {room.ended
               ? t("replay.controls.ended")
               : here
                 ? t("replay.controls.pos", { stage: here.stage, phase: here.phaseLabel })
                 : t("replay.controls.badge")}
-          </div>
+          </span>
+        </div>
+
+        <div className="rc-center">
+          {targets && (
+            <>
+              <button className="bubbly rc-skip" title={t("replay.controls.prev_stage")} disabled={targets.prevStage == null} onClick={() => go(prevStage)}>
+                <RcIcon d={IC.skipPrevTri} d2={IC.skipPrevBar} />
+              </button>
+              <button className="bubbly rc-skip" title={t("replay.controls.prev_phase")} disabled={targets.prevPhase == null} onClick={() => go(prevPhase)}>
+                <RcIcon d={IC.triLeft} />
+              </button>
+            </>
+          )}
+
+          <button
+            className="bubbly blue rc-play"
+            title={room.ended ? t("replay.controls.restart") : room.paused ? t("replay.controls.play") : t("replay.controls.pause")}
+            onClick={() => (room.ended ? onRestart() : room.togglePause())}
+          >
+            {room.ended ? <RcIcon d={IC.restart} /> : room.paused ? <RcIcon d={IC.play} /> : <RcIcon d={IC.pauseL} d2={IC.pauseR} />}
+          </button>
+
+          {targets && (
+            <>
+              <button className="bubbly rc-skip" title={t("replay.controls.next_phase")} disabled={targets.nextPhase == null} onClick={() => go(nextPhase)}>
+                <RcIcon d={IC.triRight} />
+              </button>
+              <button className="bubbly rc-skip" title={t("replay.controls.next_stage")} disabled={targets.nextStage == null} onClick={() => go(nextStage)}>
+                <RcIcon d={IC.skipNextTri} d2={IC.skipNextBar} />
+              </button>
+            </>
+          )}
+        </div>
+
+        <div className="rc-side rc-right">
+          {/* Frame-step — the inspect-a-fight-tick-by-tick tool. While playing, the step handlers pause
+              first, then advance/rewind one frame. Back is a reboot-seek (the decoder is forward-only) so
+              it's a touch slower than forward. */}
+          <span className="rc-step">
+            <button className="bubbly rc-skip" title={t("replay.controls.step_back")} onClick={onStepBackward}>
+              −1
+            </button>
+            <button className="bubbly rc-skip" title={t("replay.controls.step_forward")} onClick={onStepForward}>
+              +1
+            </button>
+          </span>
+
+          <select
+            className="rc-speed-select"
+            value={room.getSpeed()}
+            onChange={(e) => room.setSpeed(Number(e.target.value))}
+          >
+            {SPEEDS.map((s) => (
+              <option key={s} value={s}>
+                {speedLabel(s)}
+              </option>
+            ))}
+          </select>
+
+          <button
+            className={`bubbly rc-events${eventLogOpen ? " blue" : ""}`}
+            title={t("replay.controls.events")}
+            onClick={onToggleEventLog}
+          >
+            ☰
+          </button>
         </div>
       </div>
-
-      <select
-        className="rc-speed-select"
-        value={room.getSpeed()}
-        onChange={(e) => room.setSpeed(Number(e.target.value))}
-      >
-        {SPEEDS.map((s) => (
-          <option key={s} value={s}>
-            {speedLabel(s)}
-          </option>
-        ))}
-      </select>
-
-      <button
-        className={`bubbly rc-events${eventLogOpen ? " blue" : ""}`}
-        title={t("replay.controls.events")}
-        onClick={onToggleEventLog}
-      >
-        ☰
-      </button>
     </div>
   )
 }

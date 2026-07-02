@@ -5059,7 +5059,6 @@
 			"empty_on": "They'll appear here after you finish a game.",
 			"empty_off": "Recording is currently off, turn it on in the options menu.",
 			"other_build": "other build",
-			"other_build_tip": "Recorded on a different game build — playback may be incomplete",
 			"delete_q": "Delete?",
 			"watch": "Watch",
 			"download_tip": "Download",
@@ -5098,15 +5097,15 @@
 				"engine": "Engine"
 			},
 			"sub": {
-				"casts": "Casts",
+				"casts": "Ability",
 				"damage": "Damage",
-				"heals": "Heals",
+				"heals": "Healing",
 				"text": "Text",
 				"board_effects": "Board effects",
 				"weather": "Weather"
 			},
 			"section": {
-				"casts_pov": "Casts / damage / heal · recorder's PoV",
+				"casts_pov": "Ability / damage / healing · recorder's PoV",
 				"board_weather": "Board effects / weather · all boards",
 				"status_all": "Status · all boards",
 				"stats_all": "Stats · all boards"

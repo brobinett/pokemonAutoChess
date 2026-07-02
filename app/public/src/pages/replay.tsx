@@ -700,12 +700,7 @@ function RecordingSummary({
           {formatWhen(recordedAt, fallbackMs)} · {formatSize(bytes)}
           {game?.version ? ` · ${game.version}` : ""}
           {skew ? (
-            <span
-              className="replay-row-skew"
-              title={t("replay.library.other_build_tip")}
-            >
-              {t("replay.library.other_build")}
-            </span>
+            <span className="replay-row-skew">{t("replay.library.other_build")}</span>
           ) : null}
         </span>
         {summary ? (
