@@ -20,25 +20,24 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 const DEFAULT_TOP = "57vh"
 const DEFAULT_RIGHT = "6vw"
 
-// The default box is measured from the live game layout so the log fills the right-hand column: vertically
-// between the (minimized) battle-stats pane and the playback controls, horizontally between the board and
-// the player portraits. The DPS meter already sits right of the board, so its LEFT edge is our left anchor;
-// `#game-players` (the portrait column) is the right anchor; `.replay-controls` (the bar) is the bottom.
-// GAP ≈ the breathing room the game leaves between the controls and the shop. Returns null if the anchors
-// aren't on screen yet (→ the fallback dock applies until they are).
+// The default box fills the right-hand column: a fixed-width panel anchored to the player-portrait column on
+// the right and the playback controls at the bottom. It is measured only from STABLE layout — deliberately
+// NOT the `.game-dps-meter` (battle-stats) pane, which is FIGHT-only AND collapsible: keying the left/top off
+// it made the box jump between opens (open during town → fallback spot; seek into a fight, reopen → shifted
+// right to align with the battle stats). Anchoring to `#game-players` (right) + `.replay-controls` (bottom)
+// only, with a fixed width and a constant top, keeps every open in the same place. GAP ≈ the breathing room
+// the game leaves between panes. Returns null if the anchors aren't on screen yet (→ the fallback dock applies).
 const GAP = 8
+const DEFAULT_WIDTH = 360
 function measureDefaultBox(): { left: number; top: number; width: number; height: number } | null {
   if (typeof document === "undefined") return null
-  // Right + bottom anchors are always on screen; require them. The battle-stats pane is FIGHT-only, so
-  // it's optional — when it's up we align the top/left to it; otherwise we fall back to a right-column box.
   const players = document.querySelector("#game-players")?.getBoundingClientRect()
   const bar = document.querySelector(".replay-controls")?.getBoundingClientRect()
   if (!players || !bar) return null
-  const dps = document.querySelector(".game-dps-meter")?.getBoundingClientRect()
   const rightEdge = players.left - GAP
-  const left = dps ? Math.round(dps.left) : Math.round(rightEdge - 360)
-  const top = dps ? Math.round(dps.bottom + GAP) : Math.round(window.innerHeight * 0.12)
-  const width = Math.max(240, Math.round(rightEdge - left))
+  const left = Math.round(rightEdge - DEFAULT_WIDTH)
+  const top = Math.round(window.innerHeight * 0.12)
+  const width = Math.max(240, rightEdge - left)
   const height = Math.max(140, Math.round(bar.top - GAP - top))
   return { left, top, width, height }
 }

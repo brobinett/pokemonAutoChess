@@ -229,30 +229,18 @@
 }
 /* .prep (PICK) intentionally has no band — it reads as the base track colour. */
 
-/* Playhead: where we are now — a bright gold line + a knob on top so it reads clearly against the
- * red/blue phase bands (the plain 2px white line was easy to lose). */
+/* Playhead: where we are now — a white line with a thin black outline so it reads against the red/green/
+ * yellow bands (white reads better than the old gold now that fights are the lighter-red majority). */
 .replay-controls .rc-playhead {
   position: absolute;
   top: -2px;
   bottom: -2px;
   width: 3px;
   transform: translateX(-1.5px);
-  background: var(--color-fg-gold);
+  background: #fff;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
   pointer-events: none;
   z-index: 6;
-}
-.replay-controls .rc-playhead::after {
-  content: "";
-  position: absolute;
-  top: -6px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--color-fg-gold);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
 }
 
 /* Timeline markers on the scrubber: thin phase ticks, taller/brighter stage starts. Each is a
