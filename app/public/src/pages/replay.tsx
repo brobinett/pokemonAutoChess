@@ -167,6 +167,12 @@ export default function Replay() {
       aliveRef.current = true
       return () => {
         aliveRef.current = false // stop a deferred index build (loadManifest) from booting into this torn-down page
+        // Stop the CURRENT room's playback timer on EVERY exit path — the teardown can't rely on the exit
+        // having paused it. The browser-Back path runs game.tsx's confirmLeave, whose []-deps closure holds
+        // the INITIAL ReplayRoom (already paused), not `replayRoom.current`; so after a seek the live,
+        // self-rescheduling timer would keep applying frames into the torn-down scene and re-dispatching
+        // replay state into Redux right after we reset it below (re-polluting GameStore for the next game).
+        replayRoom.current?.pause()
         // Restore the real uid. Prefer the captured Redux identity (keeps the real displayName); fall back
         // to firebase.auth().currentUser — the replay only ever overwrites the Redux uid, never firebase —
         // so the restore can't be defeated even if the early capture missed a not-yet-resolved auth.
@@ -654,21 +660,25 @@ function formatSize(bytes: number): string {
 function RowSummary({ summary }: { summary: ReplaySummary }) {
   const { t } = useTranslation()
   const pkmName = (n: string) => (t as (k: string) => string)(`pkm.${n}`)
-  const team = summary.team ?? []
+  // The summary can come from an untrusted opened file (parseTrailerFooter only guarantees it's an object),
+  // so coerce every rendered field: a non-array `team`, or a non-primitive `rank`/`name`, would otherwise
+  // throw in render and — this panel being outside the error boundary — white-screen the page.
+  const rank = typeof summary.rank === "number" ? summary.rank : null
+  const team = Array.isArray(summary.team) ? summary.team : []
   return (
     <span className="replay-row-summary">
-      {summary.rank != null && (
+      {rank != null && (
         // Placement styled like the profile match history ("Top 1", "Top 7") — reuses the game's own `top` key.
         <span className="replay-rank">
-          {t("top")} {summary.rank}
+          {t("top")} {rank}
         </span>
       )}
       {team.map((u, i) => (
         <PokemonPortrait
-          key={`${u.index}-${i}`}
+          key={`${String(u?.index)}-${i}`}
           className="replay-row-portrait"
-          portrait={{ index: u.index, shiny: u.shiny }}
-          title={pkmName(u.name)}
+          portrait={{ index: String(u?.index ?? ""), shiny: !!u?.shiny }}
+          title={pkmName(String(u?.name ?? ""))}
         />
       ))}
     </span>
@@ -702,7 +712,7 @@ function RecordingSummary({
   return (
     <div className="replay-row">
       <div className="replay-row-info">
-        {name && <span className="replay-row-name">{name}</span>}
+        {typeof name === "string" && name && <span className="replay-row-name">{name}</span>}
         <span className="replay-row-meta">
           {formatWhen(recordedAt, fallbackMs)} · {formatSize(bytes)}
           {game?.version ? ` · ${game.version}` : ""}

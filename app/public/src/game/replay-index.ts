@@ -706,7 +706,9 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
   // uid → in-game name, accumulated across ALL frames (not just the final state): a player who leaves before
   // stage 6 is deleted from state.players (game-room onLeave), but their owner-tagged rows remain — keep
   // their name so they still get a chip in the per-player filter.
-  const playerNames: Record<string, string> = {}
+  // Null-proto: viewerUid/uids come from an untrusted opened file, so a hostile "__proto__" must read as
+  // undefined (a plain {} would return Object.prototype → rendered as a React child, crashing the log).
+  const playerNames: Record<string, string> = Object.create(null)
 
   let prevPhase: number | undefined
   let prevStage: number | undefined

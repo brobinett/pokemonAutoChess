@@ -262,7 +262,8 @@ export default function Game() {
     // the /replay route's own unmount tears down the Phaser game and the ReplayRoom. No-op for a live game
     // (a real Colyseus room id is never "replay").
     if ((room as { roomId?: string })?.roomId === "replay") {
-      ;(room as { pause?: () => void }).pause?.()
+      // The /replay route's own unmount teardown stops the current ReplayRoom's timer and restores state;
+      // here we only need to leave the route (this `room` is the stale mount-time ReplayRoom anyway).
       navigate("/lobby")
       return
     }
