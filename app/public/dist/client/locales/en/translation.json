@@ -5046,7 +5046,8 @@
 			"events": "Event log"
 		},
 		"endgame": {
-			"download": "Download replay"
+			"download": "Download replay",
+			"download_failed": "Download failed — try again"
 		},
 		"library": {
 			"title": "Watch a replay",

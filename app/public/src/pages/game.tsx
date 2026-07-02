@@ -256,6 +256,16 @@ export default function Game() {
   )
 
   const leave = useCallback(async () => {
+    // A replay reuses this live <Game/>; its exit paths (browser Back, an end-of-match overlay button,
+    // any future caller) must NOT run the live leave flow — it creates an after-game room on the REAL
+    // server from the recorded match's players + this user's token. For a replay just return to the lobby;
+    // the /replay route's own unmount tears down the Phaser game and the ReplayRoom. No-op for a live game
+    // (a real Colyseus room id is never "replay").
+    if ((room as { roomId?: string })?.roomId === "replay") {
+      ;(room as { pause?: () => void }).pause?.()
+      navigate("/lobby")
+      return
+    }
     const afterPlayers = new Array<IAfterGamePlayer>()
 
     const token = await firebase.auth().currentUser?.getIdToken()
@@ -422,6 +432,10 @@ export default function Game() {
   }, [])
 
   useEffect(() => {
+    // Drop any portrait base64 cache left by a previous game/replay before this one bakes its own POV
+    // customs — the normal-exit clear (leave / route unmount) misses abnormal exits (ROOM_DELETED /
+    // USER_BANNED → back to lobby), so clear on entry too, making it exit-path-independent.
+    clearPortraitBase64Cache()
     const connect = () => {
       logger.debug("connecting to game")
       authenticateUser().then(async (user) => {
@@ -859,6 +873,10 @@ export default function Game() {
               value !== previousValue &&
               player.id === uid &&
               !spectate &&
+              // In a replay this is the recorded POV dying mid-playback; showing the placing overlay would
+              // sit it over the rest of the match (and its leave button runs the live flow). Suppress it,
+              // mirroring the FINAL_RANK message guard. No-op for a live game.
+              (room as { roomId?: string }).roomId !== "replay" &&
               finalRankVisibility === FinalRankVisibility.HIDDEN
             ) {
               setFinalRankVisibility(FinalRankVisibility.VISIBLE)

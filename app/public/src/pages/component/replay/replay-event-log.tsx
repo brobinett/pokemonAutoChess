@@ -423,7 +423,13 @@ export default function ReplayEventLog({
     const roster = index.playerNames
     const pruned = [...playerOn].filter((u) => roster[u] !== undefined)
     if (pruned.length === playerOn.size) return
-    setPlayerOn(pruned.length ? new Set(pruned) : new Set([viewerUid]))
+    // Fall back to the POV when the intersection is empty, but guard against a re-run loop: if the POV uid
+    // itself isn't in this recording's roster (a truncated capture whose POV name never synced, or a foreign
+    // file), Set([viewerUid]) would re-prune to empty every run → unbounded setState (white-screening the
+    // route, since this panel renders outside the error boundary). Bail once the next set equals the current.
+    const next = pruned.length ? new Set(pruned) : new Set<string>([viewerUid])
+    if (next.size === playerOn.size && [...next].every((u) => playerOn.has(u))) return
+    setPlayerOn(next)
   }, [index, viewerUid, playerOn])
 
   // restore the saved size + persist on resize. The CSS resize handle mutates the element directly;
@@ -495,7 +501,9 @@ export default function ReplayEventLog({
     // owning player (uid-less = the game-level town/rule rows); the per-player filter slices on it.
     index?.actions.forEach((a) => out.push({ t: a.t, frame: -1, type: a.type.toUpperCase(), summary: formatReplayEvent(t, a), cat: ACTION_CAT[a.type] ?? "economy", kind: a.type === "pick" ? "pick" : "action", uid: a.uid, key: a.key }))
     return out.sort((a, b) => a.t - b.t || a.frame - b.frame)
-  }, [room, index, viewerUid, t])
+    // Key on the stable manifest, not `room`: boot() makes a new ReplayRoom (new identity) on every seek,
+    // but the manifest object is the same — depending on `room` rebuilt this whole list on each scrub.
+  }, [room.manifest, index, viewerUid, t])
 
   // Sub-types present per category, projected through the per-player filter → drives the category chips
   // AND the per-category drill-down. Counting only rows visible under the current `playerOn` selection

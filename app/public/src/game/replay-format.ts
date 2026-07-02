@@ -257,6 +257,10 @@ function parseTrailerFooter(buf: Uint8Array): { summary: ReplaySummary; byteLeng
     const start = lenPos - summaryLen
     if (summaryLen <= 0 || start < 0) return null // trailer not fully inside `buf` (tail slice too short) / corrupt
     const summary = JSON.parse(td.decode(buf.subarray(start, lenPos))) as ReplaySummary
+    // Require an object: JSON.parse also accepts primitives (`1234`, `true`, `null`), so a frame body that
+    // coincidentally ends in `<json-primitive><u32 len>"CLTR"` would be mis-read as a trailer — truncating
+    // real frame bytes on the resume path. A real summary is always an object.
+    if (typeof summary !== "object" || summary === null) return null
     return { summary, byteLength: summaryLen + TRAILER_FOOTER_LEN }
   } catch {
     return null

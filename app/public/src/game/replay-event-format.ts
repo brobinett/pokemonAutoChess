@@ -213,7 +213,10 @@ export function formatMessageRow(t: TFunction, type: string, payload: unknown, i
         const o = p as { skill?: string; positionX?: number; positionY?: number }
         const skill = abilityName(t, String(o?.skill))
         if (info?.caster) return t(`${R}.cast`, { caster: pkmName(t, info.caster), skill })
-        return o?.positionX == null ? skill : t(`${R}.cast_at`, { skill, x: o.positionX, y: o.positionY })
+        // No resolved caster: a caster-less / team-wide cast (e.g. TIDAL_WAVE's (0,0) sentinel) has no
+        // meaningful tile — render the skill alone rather than a fabricated "at (0,0)".
+        if (o?.positionX == null || (o.positionX === 0 && o.positionY === 0)) return skill
+        return t(`${R}.cast_at`, { skill, x: o.positionX, y: o.positionY })
       }
       case "POKEMON_DAMAGE": {
         const o = p as { index?: string; amount?: number; type?: number; x?: number; y?: number }

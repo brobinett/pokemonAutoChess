@@ -20,6 +20,7 @@ export default function RecorderEndGame() {
   const room = getActiveGameRoom()
   const roomId = room?.roomId
   const [info, setInfo] = useState<{ frames: number; ms: number } | null>(null)
+  const [failed, setFailed] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -40,9 +41,18 @@ export default function RecorderEndGame() {
 
   return (
     <div className="recorder-endgame">
-      <button className="bubbly blue" onClick={() => void downloadReplay(room, uid)}>
+      <button
+        className="bubbly blue"
+        onClick={() => {
+          // downloadReplay drains OPFS + reads the file; on failure it would otherwise reject unhandled
+          // and the click would look like a silent no-op. Surface it so the user knows to retry.
+          setFailed(false)
+          downloadReplay(room, uid).catch(() => setFailed(true))
+        }}
+      >
         ⬇ {t("replay.endgame.download")}
       </button>
+      {failed && <p className="recorder-endgame-error">{t("replay.endgame.download_failed")}</p>}
     </div>
   )
 }

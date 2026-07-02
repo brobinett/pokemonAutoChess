@@ -8,7 +8,7 @@ import { PVEStages } from "../../../models/pve-stages"
 import { BOARD_HEIGHT, BOARD_WIDTH } from "../../../config/game/board"
 import { PortalCarouselStages } from "../../../config/game/stages"
 import { SynergyTriggers } from "../../../config/game/synergies"
-import { BattleResult, GamePhaseState, PokemonActionState } from "../../../types/enum/Game"
+import { BattleResult, GamePhaseState, Orientation, PokemonActionState } from "../../../types/enum/Game"
 import { ItemRecipe } from "../../../types/enum/Item"
 import { Pkm, PkmDuos } from "../../../types/enum/Pokemon"
 import { Synergy } from "../../../types/enum/Synergy"
@@ -262,6 +262,23 @@ function simTileOwner(
   sim.redTeam?.forEach?.((e) => { if (e?.positionX === x && e?.positionY === y) side = "red" })
   if (!side) side = y < BOARD_HEIGHT / 2 ? "blue" : "red" // empty tile → board half (blue = bottom rows)
   const owner = side === "blue" ? sim.bluePlayerId : sim.redPlayerId
+  return owner && state.players?.get(owner)?.simulationId === simId ? owner : undefined
+}
+
+// TIDAL_WAVE (Aquatic) is room-broadcast for BOTH teams with a fixed (0,0) sentinel tile (simulation.ts
+// `triggerTidalWave`), so simTileOwner(0,0) can't tell them apart — it always resolves to blue and would
+// mis-file the red team's wave onto the blue player. The only per-team discriminator in the payload is
+// `orientation` (UP = the blue/bottom team, DOWN = the red/top team). Resolve the owner from that, validated
+// by the same sim-points-back check simTileOwner uses (drops ghost/PvE sides).
+function tidalWaveOwner(
+  state: GameState,
+  simId: string | undefined,
+  orientation: string | undefined
+): string | undefined {
+  if (!simId) return undefined
+  const sim = state.simulations?.get(simId) as { bluePlayerId?: string; redPlayerId?: string } | undefined
+  if (!sim) return undefined
+  const owner = orientation === Orientation.DOWN ? sim.redPlayerId : sim.bluePlayerId
   return owner && state.players?.get(owner)?.simulationId === simId ? owner : undefined
 }
 
@@ -726,7 +743,7 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
       if (hasState && (f.type === "ABILITY" || f.type === "POKEMON_DAMAGE" || f.type === "POKEMON_HEAL" || f.type === "DISPLAY_TEXT")) {
         const state = ser.getState()
         const pl = f.payload as {
-          id?: string; skill?: string; positionX?: number; positionY?: number; targetX?: number; targetY?: number; x?: number; y?: number
+          id?: string; skill?: string; positionX?: number; positionY?: number; targetX?: number; targetY?: number; x?: number; y?: number; orientation?: string
         }
         const pov = viewerUid ? state.players?.get(viewerUid) : undefined
         const owner = pov?.spectatedPlayerId
@@ -746,8 +763,13 @@ export function buildReplayIndex(frames: ReplayFrame[], viewerUid?: string): Rep
           if (pl?.skill && ROOM_BROADCAST_ABILITIES.has(pl.skill)) {
             // A room.broadcast cast: the camera doesn't own it. Tag by the payload tile's own sim, else hide
             // (an unresolved / ghost-PvE side → foreignFrames), the same rule scanFrameCombat/BOARD_EVENT use.
-            const boardOwner = simTileOwner(state, pl?.id, pl?.positionX, pl?.positionY)
-            if (boardOwner) combatUnits[i] = { caster, owner: boardOwner }
+            // TIDAL_WAVE is the exception: its (0,0) sentinel tile is identical for both teams, so resolve
+            // its owner from the orientation instead and drop the meaningless (0,0) caster.
+            const isTidal = pl.skill === "TIDAL_WAVE"
+            const boardOwner = isTidal
+              ? tidalWaveOwner(state, pl?.id, pl?.orientation)
+              : simTileOwner(state, pl?.id, pl?.positionX, pl?.positionY)
+            if (boardOwner) combatUnits[i] = isTidal ? { owner: boardOwner } : { caster, owner: boardOwner }
             else foreignFrames.push(i)
           } else if (cameraSelfForced) {
             foreignFrames.push(i)
