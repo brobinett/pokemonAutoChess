@@ -121,17 +121,18 @@ export function formatReplayEvent(t: TFunction, ev: { type: string; a?: ReplayEv
           : t(`${R}.round_draw`, { opponent })
     }
     case "region": return t(`${R}.region`, { region: mapName(t, String(a.map)) })
-    case "artifact": return t(`${R}.artifact`, { item: itemName(t, String(a.item)) })
+    // A Normal-synergy scarf grant reads like any bench pickup — reuse the shared "Got {{item}}" copy.
+    case "scarf": return t(`${R}.got_item`, { item: itemName(t, String(a.item)) })
     case "hatch": return t(`${R}.hatch`, { pkm: pkmName(t, String(a.pkm)) })
     case "evolve": return t(`${R}.evolve`, { from: pkmName(t, String(a.from)), to: pkmName(t, String(a.to)) })
     case "buy":
       return a.gold != null
-        ? t(`${R}.buy_gold`, { pkm: pkmName(t, String(a.pkm)), gold: goldStr(Number(a.gold)) })
+        ? t(`${R}.shop_gold`, { pkm: pkmName(t, String(a.pkm)), gold: goldStr(Number(a.gold)) })
         : pkmName(t, String(a.pkm))
     case "remove": return pkmName(t, String(a.pkm))
     case "sell":
       return a.gold != null
-        ? t(`${R}.sell_gold`, { pkm: pkmName(t, String(a.pkm)), gold: goldStr(Number(a.gold)) })
+        ? t(`${R}.shop_gold`, { pkm: pkmName(t, String(a.pkm)), gold: goldStr(Number(a.gold)) })
         : pkmName(t, String(a.pkm))
     case "reroll":
       return a.gold != null ? t(`${R}.reroll`, { gold: goldStr(Number(a.gold)) }) : t(`${R}.shop_refresh`)

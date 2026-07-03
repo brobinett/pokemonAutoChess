@@ -89,7 +89,7 @@ export type ReplayEventType =
   | "synergy" // a synergy tier activated/upgraded — player.synergies crossed a SynergyTriggers threshold
   | "town" // a town encounter NPC appeared (state.townEncounter — shared, game-level)
   | "region" // any player entered a new region (player.map; derived for all players, owner-tagged)
-  | "artifact" // a Normal-synergy scarf was crafted (scarvesItems; Fairy wands log via `pick`)
+  | "scarf" // the Normal synergy granted a scarf to the bench at a tier bump (scarvesItems; not a craft)
   | "weather" // a fight started with weather (its simulation's weather, ≠ NEUTRAL) — owner-tagged, any board
   | "berries" // a player's berry-tree species repopulated (berryTreesType; derived for all players)
   | "rule" // a special game rule is in effect (state.specialGameRule — scribble modes; once, at start)
@@ -410,8 +410,10 @@ function derivePlayerStateEvents(
   if (prev) {
     // Region change — player.map is set to the portal's destination when one is taken.
     if (prev.map !== undefined && map && map !== prev.map) push("region", { map })
-    // Normal-synergy scarf craft: scarvesItems grows (lands outside player.items, so the item diffs miss it).
-    for (const x of multisetDiff(prev.scarves, scarves).added) push("artifact", { item: x })
+    // Normal-synergy scarf grant: at a Normal tier bump (3/5/7/9) a scarf item lands on the bench via
+    // scarvesItems (outside player.items, so the item diffs miss it) — the Silk Scarf, or whatever it was
+    // upgraded into earlier. Logged like any bench pickup ("Got …"), not as a craft.
+    for (const x of multisetDiff(prev.scarves, scarves).added) push("scarf", { item: x })
 
     // Choices resolved this frame: present last frame, gone now (the player picked → left player.choices).
     // Their snapshotted slate is what the pick was made FROM. Auto-pick on timeout can resolve several.

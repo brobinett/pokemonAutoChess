@@ -177,7 +177,7 @@ const ACTION_CAT: Record<string, Category> = {
   town: "flow",
   region: "flow",
   rule: "flow",
-  artifact: "items",
+  scarf: "items",
   weather: "combat", // a fight property (any board's fight, owner-tagged) → grouped under Combat, not Synergy
   berries: "synergy",
   status: "status",

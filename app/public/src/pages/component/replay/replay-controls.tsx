@@ -286,7 +286,7 @@ export default function ReplayControls({
           speed label changes width). */}
       <div className="rc-bar">
         <div className="rc-side rc-left">
-          <span className="rc-handle" title={t("replay.controls.drag")} onMouseDown={onHandleDown}>
+          <span className="rc-handle" onMouseDown={onHandleDown}>
             ⠿
           </span>
           {/* Time + stage·phase as small PAC-style HUD pills (like the life/gold readouts). rc-pos doubles
