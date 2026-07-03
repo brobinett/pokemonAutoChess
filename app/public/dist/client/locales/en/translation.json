@@ -5039,6 +5039,7 @@
 			"pause": "Pause (Space)",
 			"step_back": "Step back one frame (,)",
 			"step_forward": "Step forward one frame (.)",
+			"speed": "Playback speed (↑/↓)",
 			"ended": "Replay ended",
 			"badge": "REPLAY",
 			"pos": "S{{stage}} · {{phase}}",

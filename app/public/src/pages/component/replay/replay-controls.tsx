@@ -350,6 +350,7 @@ export default function ReplayControls({
 
           <select
             className="rc-speed-select"
+            title={t("replay.controls.speed")}
             value={room.getSpeed()}
             onChange={(e) => room.setSpeed(Number(e.target.value))}
           >
