@@ -457,9 +457,10 @@
 /* replays library: the list of recordings stored in this browser (OPFS), each with watch/download/delete,
    plus a "keep most recent N" retention control. Wider than the bare picker card to fit the rows. */
 .replay-library-card {
-  /* wide enough that a 10-unit team (38px portraits + "Top N") fits on one line in BOTH the picker preview
-     and a library row at even columns — the preview is the tighter of the two (its "Choose another" button
-     is wider than the library's icon actions). Measured: 10 units clear the wrap at ~1520px. */
+  /* Wide enough that a full team (≤9 portraits + "Top N") shows at full 38px size on one line in both columns
+     without the shrink-to-fit kicking in (see .replay-row-portrait — portraits shrink on narrower cards rather
+     than wrapping, so this width is for comfort, not to prevent wrapping). The picker preview is the tighter
+     column (its "Choose another" button is wider than the library's icon actions). */
   max-width: 1520px;
   width: min(1520px, 95vw);
   /* Hold a landscape aspect at this width rather than a wide/short banner. Some bottom whitespace is expected
@@ -498,11 +499,18 @@
 .replay-landing-left .replay-dropzone {
   margin-top: 0;
 }
-/* A stable slot height so swapping the dropzone ↔ preview (which differ in height, and the preview — a
-   .replay-row — varies with team size) doesn't jump the card height — the file-pick jitter fix. */
-.replay-landing-left .replay-dropzone,
-.replay-landing-left > .replay-row {
+/* A stable slot height so swapping the dropzone ↔ preview (which differ in height) doesn't jump the card
+   height — the file-pick jitter fix. The floor lives on this SLOT WRAPPER, not on the preview row, so the
+   preview renders at its natural height (matching a library row) and top-aligns, instead of being stretched
+   to 132px — which was why a loaded preview looked taller than the saved rows. The dropzone still fills the
+   slot so the drop target keeps its presence. */
+.replay-landing-left .replay-pick-slot {
+  display: flex;
+  flex-direction: column;
   min-height: 132px;
+}
+.replay-landing-left .replay-pick-slot > .replay-dropzone {
+  flex: 1;
 }
 /* center the dropzone's own content vertically in that slot (it's a flex COLUMN, so this is the block axis;
    the preview row keeps its default row justify-content: space-between) */
@@ -603,7 +611,8 @@
   align-items: center;
   gap: 7px;
   margin-top: 4px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap; /* keep the team on ONE line; portraits shrink-to-fit rather than wrap (see below) */
+  min-width: 0;
 }
 /* placement as plain "Top N" text, matching the profile match history (.game-history .top) — not a pill */
 .replay-rank {
@@ -613,11 +622,15 @@
   color: var(--color-fg-primary);
   margin-right: 2px;
 }
-/* team portraits: readable thumbnails (same size as the picker preview); a full board (up to 13) wraps to a
-   second line rather than forcing the card wider than its layout */
+/* team portraits: readable 38px thumbnails (one size in both the picker preview and the library rows). A team
+   is deployed on-board units only, so at most MAX_LEVEL = 9 portraits (app/config/game/experience.ts) — that
+   fits one line on a wide card. To never wrap OR truncate on a narrower card, the portraits shrink-to-fit
+   (flex-basis 38px, shrinkable, square via aspect-ratio) instead of wrapping to a second line. */
 .replay-row-summary .replay-row-portrait {
-  width: 38px;
-  height: 38px;
+  flex: 0 1 38px;
+  min-width: 0;
+  height: auto;
+  aspect-ratio: 1;
   image-rendering: pixelated;
 }
 .replay-confirm-q {

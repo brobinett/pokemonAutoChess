@@ -928,6 +928,9 @@ function ReplayLibrary({
             <div className="replay-library-head">
               <span className="replay-library-label">{t("replay.library.open_file")}</span>
             </div>
+            {/* Fixed-height slot: the floor lives here (not on the preview row), so swapping dropzone ↔ preview
+                doesn't jitter the card, yet the preview renders at its natural (library-row) height. */}
+            <div className="replay-pick-slot">
         {preview ? (
           // The picked file rendered with the SAME presentation as a library row — only the actions differ
           // (Play / Choose another vs Watch / download / delete). Falls back to the filename for the name when
@@ -978,6 +981,7 @@ function ReplayLibrary({
             </label>
           </div>
         )}
+            </div>
 
             {/* Limitations blurb sits under the picker in the LEFT column (a plain two-column card, NOT a
                 full-width footer). Inline emphasis is flattened into the translation values (one key per
