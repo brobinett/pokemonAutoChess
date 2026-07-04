@@ -1182,8 +1182,8 @@
 		"SKWOVET": "Skwovet",
 		"GREEDENT": "Greedent",
 		"QUAXLY": "Quaxly",
-    	"QUAXWELL": "Quaxwell",
-    	"QUAQUAVAL": "Quaquaval",
+		"QUAXWELL": "Quaxwell",
+		"QUAQUAVAL": "Quaquaval",
 		"KOMALA": "Komala",
 		"TAROUNTULA": "Tarountula",
 		"SPIDOPS": "Spidops",
@@ -3481,7 +3481,7 @@
 		"ELECTRIC_FIELD": "Increase damage dealt by ELECTRIC Pokémon by 20%",
 		"PSYCHIC_FIELD": "Increase damage dealt by PSYCHIC Pokémon by 20%",
 		"GRASS_FIELD": "Increase damage dealt by GRASS Pokémon by 20%",
-		"FAIRY_FIELD": "Increase damage dealt by FAIRY Pokémon by 20%"		
+		"FAIRY_FIELD": "Increase damage dealt by FAIRY Pokémon by 20%"
 	},
 	"synergy": {
 		"NORMAL": "Normal",
@@ -3862,7 +3862,7 @@
 	"bench": "Bench",
 	"synergies": "Synergies",
 	"join_as_guest": "Join as Guest",
-	"welcome": "Welcome",	
+	"welcome": "Welcome",
 	"stage": "Stage",
 	"spectate": "Spectate",
 	"spectating": "Spectating {{ name }}",
@@ -3890,7 +3890,7 @@
 	"games_in_progress_other": "{{count}} games in progress",
 	"events": "Events",
 	"custom_room_short": "Custom",
-	"loading": "Loading...",	
+	"loading": "Loading...",
 	"no_data_available": "No data available",
 	"no_bots_found": "No bots found !",
 	"leaderboard": "Leaderboard",
@@ -3963,9 +3963,9 @@
 	"shiny_hunter": "Shiny Hunter",
 	"pokedex": "Pokédex",
 	"alt_forms": "Alternative Forms",
-	"unlocked": "Unlocked",	
+	"unlocked": "Unlocked",
 	"show_evolutions": "Show evolutions",
-	"show_alt_forms": "Show alternative forms",	
+	"show_alt_forms": "Show alternative forms",
 	"show_only_available_picks": "Show only available add picks / regionals",
 	"close": "Close",
 	"additional_pokemon_hint": "Each player picked additional Pokémon to be available in all players shop for this game.",
@@ -4226,7 +4226,7 @@
 	"valid": "Valid",
 	"invalid": "Invalid",
 	"all": "All",
-	"status_label": "Status",	
+	"status_label": "Status",
 	"help": "Help",
 	"bot_admin": "Bot Admin",
 	"change": "Change",
@@ -4956,7 +4956,7 @@
 		"count": "Count"
 	},
 	"notification": {
-		"info_title": "Information",		
+		"info_title": "Information",
 		"level_up_title": "Level Up!",
 		"level_up_message": "Congratulations!\nYou've reached level {{level}} and earned a booster pack!",
 		"new_title_title": "New Title Unlocked!",
@@ -5078,14 +5078,14 @@
 			"storage_detail": "They stay on this device only and aren't backed up or synced. Clearing your browser data deletes them, and a replay made in a private window is gone once you close it.",
 			"recording_title": "Recording limitations",
 			"rec_intro": "Replays are recorded from one player's point of view. This means that:",
-			"rec_shop": "Only the recording player's shop is captured \u2014 other players' shops are hidden, so a rival buying a unit shows only as \"gained.\"",
-			"rec_combat": "Combat casts and damage follow whichever board is on screen, so scouting another board mid-fight catches its casts but misses the recording player's own.",
+			"rec_shop": "Only the recording player's shop is captured. Other players' shops are hidden, and another player buying a unit will show in the event log as \"gained\".",
+			"rec_combat": "Ability casts and combat damage are only recorded for the board that the recording player was viewing at the time. This means that all other combats will not play ability animations, and the event log does not have a record of those casts. Board state such as HP/MP is still tracked for every board, so combats are still legible.",
 			"rec_income": "Only the recording player's income breakdown (base, interest, streak) is captured.",
-			"rec_gap": "If the connection drops mid-game, that stretch of the match is missing from the recording.",
+			"rec_gap": "If the recording player disconnected mid-game, that stretch of the match will be missing from the recording.",
 			"playback_title": "Playback limitations",
-			"play_rebuild": "The match is rebuilt from saved game data, not from a video.",
-			"play_sound": "Sound plays live from your game: region music and the usual chimes, at your own volume. There are no combat sound effects to record.",
-			"play_speed": "The speed control changes how fast the match advances. Animations always play at normal speed, so higher speeds look choppier than a smooth fast-forward."
+			"play_rebuild": "The replay is rebuilt from saved game data, not from a video. This means that:",
+			"play_sound": "Music and other sound effects are played live, not from the recording. They are not affected by playback speed.",
+			"play_speed": "The speed control changes how fast the match advances, but has no effect on the speed of the renderer. Animations always play at normal speed, so higher speeds can look choppy. The speed is best-effort, so a slower or busy device may not keep up with the highest settings."
 		},
 		"eventlog": {
 			"title": "Event log",
@@ -5187,6 +5187,7 @@
 			"version": "This replay was recorded on game version {{recorded}}; you're running {{running}}. Some of it may not play back correctly.",
 			"serializer": "This replay was recorded with a different state format ({{recorded}} vs {{running}}). Some of it may not play back correctly.",
 			"build": "This replay was recorded on a different build of {{version}} ({{recorded}} vs {{running}}). Most of it should play back, but some details may differ."
-		}
+		},
+		"back_to_lobby": "Back to lobby"
 	}
 }

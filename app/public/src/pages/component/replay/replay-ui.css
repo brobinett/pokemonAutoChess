@@ -373,9 +373,12 @@
   max-width: 42em;
 }
 .replay-limitations-title {
+  /* Match the column headers ("Open a file" / "Saved in this browser", .replay-library-label) which sit at
+     the card's base size — counter the 0.85em fine-print scale of the surrounding .replay-limitations block. */
+  font-size: calc(1em / 0.85);
   font-weight: 700;
   color: var(--color-fg-primary);
-  margin-bottom: 0.4em;
+  margin-bottom: 0.5em;
 }
 /* The lead heads-up (saved in your browser / download to keep) is the one line a non-reader must catch, so
    give it more weight than the surrounding fine print. */
@@ -478,6 +481,13 @@
   align-self: flex-start;
   margin-bottom: 0.6em;
 }
+/* Back-to-lobby control, top-left of the landing card (the /replay page has no game sidebar to leave from). */
+.replay-back-btn {
+  align-self: flex-start;
+  margin: 0;
+  padding: 0.3em 0.8em;
+  font-size: 0.82em;
+}
 .replay-landing-cols {
   display: grid;
   /* even columns — the picker/limitations (left) and recordings (right) read as a balanced pair; the card is
@@ -509,7 +519,9 @@
 .replay-landing-left .replay-pick-slot {
   display: flex;
   flex-direction: column;
-  min-height: 96px;
+  /* Floor to a loaded preview's height (a full-width team line at 38px ≈ 101px) so the empty dropzone,
+     a loaded preview, and the saved-row list all read as the same height — and swapping doesn't jitter. */
+  min-height: 101px;
 }
 .replay-landing-left .replay-pick-slot > .replay-dropzone {
   flex: 1;
@@ -573,17 +585,25 @@
    game-history rows, instead of a bespoke dark pill */
 .replay-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.8em;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.15em;
   padding: 0.4em 0.6em;
   background: var(--color-bg-secondary);
   border: var(--border-thin);
   border-radius: 12px;
 }
+/* the row's top line: name/meta (left) + actions (right); the team portraits are a full-width line below */
+.replay-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8em;
+}
 .replay-row-info {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-width: 0;
 }
 /* POV player name — the row's primary line (shown in library rows AND the picker preview). For a recording

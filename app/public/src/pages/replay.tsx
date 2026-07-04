@@ -4,6 +4,7 @@ import firebase from "firebase/compat/app"
 import { type ReactNode, useEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { useTranslation } from "react-i18next"
+import { useNavigate } from "react-router"
 import pkg from "../../../../package.json"
 import type GameState from "../../../rooms/states/game-state"
 import { GamePhaseState } from "../../../types/enum/Game"
@@ -711,22 +712,28 @@ function RecordingSummary({
   const skew = game ? detectBuildSkew(game, RUNNING_BUILD) : null
   return (
     <div className="replay-row">
-      <div className="replay-row-info">
-        {typeof name === "string" && name && <span className="replay-row-name">{name}</span>}
-        <span className="replay-row-meta">
-          {formatWhen(recordedAt, fallbackMs)} · {formatSize(bytes)}
-          {game?.version ? ` · ${game.version}` : ""}
-          {skew ? (
-            <span className="replay-row-skew">{t("replay.library.other_build")}</span>
-          ) : null}
-        </span>
-        {summary ? (
-          <RowSummary summary={summary} />
-        ) : (
-          <span className="replay-row-meta">{t("replay.library.no_summary")}</span>
-        )}
+      {/* Top line: name + meta on the left, actions on the right. The team portraits go on their OWN
+          full-width line below (not inside this line) so they never compete with the action buttons for
+          width — that kept the picker preview (wide "Choose another") shrinking its portraits more than a
+          library row (icon actions), so the two didn't match. Full width → identical size in both. */}
+      <div className="replay-row-top">
+        <div className="replay-row-info">
+          {typeof name === "string" && name && <span className="replay-row-name">{name}</span>}
+          <span className="replay-row-meta">
+            {formatWhen(recordedAt, fallbackMs)} · {formatSize(bytes)}
+            {game?.version ? ` · ${game.version}` : ""}
+            {skew ? (
+              <span className="replay-row-skew">{t("replay.library.other_build")}</span>
+            ) : null}
+          </span>
+        </div>
+        <div className="replay-row-actions">{actions}</div>
       </div>
-      <div className="replay-row-actions">{actions}</div>
+      {summary ? (
+        <RowSummary summary={summary} />
+      ) : (
+        <span className="replay-row-meta">{t("replay.library.no_summary")}</span>
+      )}
     </div>
   )
 }
@@ -746,6 +753,7 @@ function ReplayLibrary({
   onError: (msg: string) => void
 }) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const [files, setFiles] = useState<ReplayFileInfo[] | null>(null) // null = still listing
   const [busy, setBusy] = useState(false) // a watch/download is in flight — disable row actions
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null) // roomId pending inline confirm
@@ -826,6 +834,12 @@ function ReplayLibrary({
           if (f) previewFile(f)
         }}
       >
+        <button
+          className="bubbly replay-back-btn"
+          onClick={() => navigate("/lobby")}
+        >
+          ← {t("replay.back_to_lobby")}
+        </button>
         <div className="replay-overlay-title">{t("replay.library.title")}</div>
 
         <div className="replay-landing-cols">
@@ -1005,8 +1019,8 @@ function ReplayLibrary({
               <div className="replay-limitations-subtitle">
                 {t("replay.about.playback_title")}
               </div>
+              <p>{t("replay.about.play_rebuild")}</p>
               <ul>
-                <li>{t("replay.about.play_rebuild")}</li>
                 <li>{t("replay.about.play_sound")}</li>
                 <li>{t("replay.about.play_speed")}</li>
               </ul>
