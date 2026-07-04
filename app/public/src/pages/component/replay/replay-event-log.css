@@ -206,8 +206,8 @@
 
 /* per-category accent (applied to the row type text always; to the chip fill when on) */
 .rel-chip-combat.on { background: #ff9a8f; }
-.rel-chip-status.on { background: #ff7eb6; }
-.rel-chip-stats.on { background: #5ec8d8; }
+.rel-chip-status.on { background: #ff8fac; }
+.rel-chip-stats.on { background: #ffab7a; }
 .rel-chip-economy.on { background: #ffd479; }
 .rel-chip-items.on { background: #e0a368; }
 .rel-chip-flow.on { background: #8fd0ff; }
@@ -264,8 +264,8 @@
 
 /* per-category accent on the row type text */
 .rel-cat-combat .rel-type { color: #ff9a8f; }
-.rel-cat-status .rel-type { color: #ff7eb6; }
-.rel-cat-stats .rel-type { color: #5ec8d8; }
+.rel-cat-status .rel-type { color: #ff8fac; }
+.rel-cat-stats .rel-type { color: #ffab7a; }
 .rel-cat-economy .rel-type { color: #ffd479; }
 .rel-cat-items .rel-type { color: #e0a368; }
 .rel-cat-flow .rel-type { color: #8fd0ff; }
