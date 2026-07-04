@@ -5047,7 +5047,7 @@
 		},
 		"endgame": {
 			"download": "Download replay",
-			"download_failed": "Download failed — try again"
+			"download_failed": "Download failed"
 		},
 		"library": {
 			"title": "Watch a replay",
@@ -5120,8 +5120,8 @@
 			"row": {
 				"phase": "Stage {{stage}} · {{phase}}",
 				"elimination": "{{player}} eliminated",
-				"round_win": "Beat {{opponent}}",
-				"round_loss": "Lost to {{opponent}}",
+				"round_win": "Win vs {{opponent}}",
+				"round_loss": "Loss vs {{opponent}}",
 				"round_draw": "Draw vs {{opponent}}",
 				"shiny_opponent": "Shiny {{opponent}}",
 				"region": "Entered {{region}}",
@@ -5186,7 +5186,7 @@
 		"skew": {
 			"version": "This replay was recorded on game version {{recorded}}; you're running {{running}}. Some of it may not play back correctly.",
 			"serializer": "This replay was recorded with a different state format ({{recorded}} vs {{running}}). Some of it may not play back correctly.",
-			"build": "This replay was recorded on a different build of {{version}} ({{recorded}} vs {{running}}). Most of it should play back, but some details may differ."
+			"build": "This replay was recorded on a different build of {{version}} ({{recorded}} vs {{running}}). Some of it may not play back correctly."
 		}
 	}
 }
