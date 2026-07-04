@@ -21,6 +21,7 @@ import {
   downloadStoredReplay,
   listReplays,
   loadStoredReplay,
+  replaysSupported,
   type ReplayFileInfo
 } from "../game/recorder"
 import { detectBuildSkew, loadReplay, type ReplaySummary } from "../game/replay-format"
@@ -869,10 +870,16 @@ function ReplayLibrary({
             <div className="replay-library-empty">{t("replay.library.loading")}</div>
           ) : files.length === 0 ? (
             <div className="replay-library-empty">
-              {t("replay.library.empty")}{" "}
-              {recording
-                ? t("replay.library.empty_on")
-                : t("replay.library.empty_off")}
+              {!replaysSupported ? (
+                t("replay.library.empty_unsupported")
+              ) : (
+                <>
+                  {t("replay.library.empty")}{" "}
+                  {recording
+                    ? t("replay.library.empty_on")
+                    : t("replay.library.empty_off")}
+                </>
+              )}
             </div>
           ) : (
             <ul className="replay-library-list">

@@ -39,7 +39,12 @@ let installed = false
 // preference in installRecorder(); seeded here so it's correct even before install. Turning it off
 // mid-game stops capture going forward (an already-running game keeps what it flushed); turning it on
 // mid-game can't recover the missed join handshake, so that game won't produce a playable replay.
-let recordingEnabled = preference("recordReplays")
+// Recording persists to OPFS, so it needs that API. When it's absent (older browser / no `navigator.storage
+// .getDirectory`) recording can never save, so we don't tap/buffer at all and the library shows an
+// "unsupported" note instead. Watching a shared `.colreplay` still works (File API only) — that's unaffected.
+export const replaysSupported =
+  typeof navigator !== "undefined" && typeof navigator.storage?.getDirectory === "function"
+let recordingEnabled = replaysSupported && preference("recordReplays")
 
 // Strong ref to the most recent game room so its captured frames survive after rooms.game is cleared
 // (e.g. on the after-game screen for the download). Tracked automatically from the taps below — no
@@ -390,7 +395,7 @@ export function installRecorder() {
 
   // Keep the capture gate in sync with the options-panel toggle (runInitially seeds it from the stored
   // pref right now, before any game join).
-  subscribeToPreference("recordReplays", (v) => { recordingEnabled = v }, true)
+  subscribeToPreference("recordReplays", (v) => { recordingEnabled = replaysSupported && v }, true)
 
   // Keep the worker's retention cap in sync with the keepReplays pref. Only push when the worker already
   // exists — don't spawn it just for a settings change (getWorker seeds the current value on spawn).

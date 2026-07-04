@@ -255,6 +255,8 @@ export default function ReplayControls({
             <button
               key={`stage-${i}`}
               className="rc-mark stage"
+              // Accessible name for the seek tick (reuses the game's own "Stage" key — no new locale string).
+              aria-label={`${t("stage")} ${st.stage}`}
               style={{ left: `${frac(st.t) * 100}%` }}
               onClick={(e) => {
                 e.stopPropagation()
