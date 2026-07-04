@@ -708,13 +708,6 @@
   font-size: 0.9em;
   color: var(--color-fg-secondary);
 }
-.replay-keep-hint {
-  margin: 0.6em 0 0;
-  font-size: 0.78em;
-  line-height: 1.45;
-  color: var(--color-fg-secondary);
-}
-
 /* library row tag for a recording made on a different game build (reuses detectBuildSkew) */
 .replay-row-skew {
   display: inline-block;

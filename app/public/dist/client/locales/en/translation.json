@@ -5064,7 +5064,6 @@
 			"delete_q": "Delete?",
 			"watch": "Watch",
 			"download_tip": "Download",
-			"prune_hint": "Older replays are removed automatically when you start a new game.",
 			"dropzone_pre": "Drag a",
 			"dropzone_post": "file here, or",
 			"choose_file": "Choose a file",
@@ -5075,7 +5074,7 @@
 		},
 		"about": {
 			"title": "About browser-recorded replays",
-			"storage": "Your replays are saved in this browser, not in the cloud. Only your most recent games are kept; older replays are pruned automatically. Download any you want to keep.",
+			"storage": "Your replays are saved in this browser, not in the cloud. Only your most recent games are kept; older replays are pruned automatically when you start a new game. Download any you want to keep.",
 			"storage_detail": "They stay on this device only and aren't backed up or synced. Clearing your browser data deletes them, and a replay made in a private window is gone once you close it.",
 			"recording_title": "Recording limitations",
 			"rec_intro": "Replays are recorded from one player's point of view. This means that:",

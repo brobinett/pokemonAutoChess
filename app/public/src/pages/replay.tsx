@@ -941,7 +941,6 @@ function ReplayLibrary({
               ))}
             </ul>
           )}
-          <p className="replay-keep-hint">{t("replay.library.prune_hint")}</p>
         </div>
           </div>
 
