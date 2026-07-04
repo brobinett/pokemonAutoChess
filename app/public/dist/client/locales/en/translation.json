@@ -5074,7 +5074,7 @@
 		},
 		"about": {
 			"title": "About browser-recorded replays",
-			"storage": "Your replays are saved in this browser, not in the cloud. Download any you want to keep.",
+			"storage": "Your replays are saved in this browser, not in the cloud, and only your most recent games are kept — older ones are removed automatically. Download any you want to keep.",
 			"storage_detail": "They stay on this device only and aren't backed up or synced. Clearing your browser data deletes them, and a replay made in a private window is gone once you close it.",
 			"recording_title": "Recording limitations",
 			"rec_intro": "Replays are recorded from one player's point of view. This means that:",
@@ -5085,7 +5085,7 @@
 			"playback_title": "Playback limitations",
 			"play_rebuild": "The replay is rebuilt from saved game data, not from a video. This means that:",
 			"play_sound": "Music and other sound effects are played live, not from the recording. They are not affected by playback speed.",
-			"play_speed": "The speed control changes how fast the match advances, but has no effect on the speed of the renderer. Animations always play at normal speed, so higher speeds can look choppy. The speed is best-effort, so a slower or busy device may not keep up with the highest settings."
+			"play_speed": "The speed control changes how fast the match advances, but has no effect on the speed of the renderer. Animations always play at normal speed, so higher speeds can look choppy. Pausing stops the match from advancing, but unit animations keep looping. The speed is best-effort, so a slower or busy device may not keep up with the highest settings."
 		},
 		"eventlog": {
 			"title": "Event log",
