@@ -516,20 +516,14 @@
 .replay-landing-left .replay-dropzone {
   margin-top: 0;
 }
-/* A stable slot height so swapping the dropzone ↔ preview (which differ in height) doesn't jump the card
-   height — the file-pick jitter fix. The floor lives on this SLOT WRAPPER, not on the preview row, so the
-   preview renders at its natural height (matching a library row) and top-aligns, instead of being stretched
-   to 132px — which was why a loaded preview looked taller than the saved rows. The dropzone still fills the
-   slot so the drop target keeps its presence. */
+/* The dropzone and a loaded preview share this slot. Both render at their NATURAL height — the preview (a
+   .replay-row) matches a library row, and the dropzone hugs its own compact content — so neither is forced
+   taller than the other (an earlier fixed floor + flex-fill made the dropzone stretch past the row height in
+   some browsers' font metrics). No jitter floor is needed: the long limitations blurb below dominates the
+   column height, so swapping dropzone ↔ preview doesn't meaningfully move the card. */
 .replay-landing-left .replay-pick-slot {
   display: flex;
   flex-direction: column;
-  /* Floor to a loaded preview's height (a full-width team line at 38px ≈ 101px) so the empty dropzone,
-     a loaded preview, and the saved-row list all read as the same height — and swapping doesn't jitter. */
-  min-height: 101px;
-}
-.replay-landing-left .replay-pick-slot > .replay-dropzone {
-  flex: 1;
 }
 /* center the dropzone's own content vertically in that slot (it's a flex COLUMN, so this is the block axis;
    the preview row keeps its default row justify-content: space-between) */
