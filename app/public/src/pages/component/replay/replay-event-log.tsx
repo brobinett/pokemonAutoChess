@@ -22,8 +22,9 @@ const DEFAULT_RIGHT = "6vw"
 
 // The default box fills the empty region to the RIGHT of the playback bar and ABOVE the shop, mirroring the
 // gap the game leaves between the playback bar and the shop on all four sides: left → the playback control
-// bar, right → the player-portrait column, top → the (unexpanded) battle-stats panel, bottom → the shop's
-// level pill. Every anchor is stable across the match EXCEPT the battle stats (`.game-dps-meter`), which is
+// bar, right → the player-portrait column, top → the (unexpanded) battle-stats panel, bottom → the "N/max"
+// board-count pill poking above the shop bar. Every anchor is stable across the match EXCEPT the battle
+// stats (`.game-dps-meter`), which is
 // FIGHT-only — in town its top falls back to a matching constant (~the same y, so the box barely moves). We
 // read the collapsed battle-stats bottom; if a user has expanded it the box just opens a little lower. The
 // gap is measured (shop.top − bar.bottom) so it tracks the game's responsive scaling; clamped for safety.
@@ -36,13 +37,13 @@ function measureDefaultBox(): { left: number; top: number; width: number; height
   const controls = rect(".replay-controls")
   const shop = rect(".game-pokemons-store")
   if (!players || !controls || !shop) return null
-  const levelPill = rect(".game-experience > span") // the "Lvl N" pill on the shop bar
+  const teamInfo = rect("#game-team-info") // the "N/max" board-count pill poking ABOVE the shop bar (right)
   const dps = rect(".game-dps-meter") // battle-stats panel — FIGHT-only
   const gap = clampGap(Math.round(shop.top - controls.bottom))
   const left = Math.round(controls.right + gap)
   const right = Math.round(players.left - gap)
   const top = Math.round(dps ? dps.bottom + gap : window.innerHeight * 0.11)
-  const bottom = Math.round((levelPill ?? shop).top - gap)
+  const bottom = Math.round((teamInfo ?? shop).top - gap)
   const width = Math.max(240, right - left)
   const height = Math.max(140, bottom - top)
   return { left, top, width, height }

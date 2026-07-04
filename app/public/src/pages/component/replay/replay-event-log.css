@@ -114,8 +114,9 @@
 .rel-caret:hover { opacity: 0.85; }
 .rel-caret.open { opacity: 1; transform: rotate(180deg); }
 
-/* expanded per-type sub-filter row. flex-shrink:0 so the flex column doesn't squash it to nothing (the
-   row list below takes the shrink instead); it keeps its content height up to max-height, then scrolls. */
+/* expanded per-type sub-filter row. flex-shrink:0 so the flex column doesn't squash it — it claims its full
+   natural height when expanded (the row list below takes the shrink instead). No scrollbars: the sub-chips
+   wrap, and any few-px header overflow is clipped by the panel's own overflow:hidden. */
 .rel-subfilters {
   flex: 0 0 auto;
   display: flex;
@@ -124,13 +125,6 @@
   padding: 4px 2px 2px;
   margin-bottom: 2px;
   border-bottom: 1px dashed rgba(255, 255, 255, 0.12);
-  max-height: 22vh;
-  overflow-y: auto;
-  /* overflow-y:auto makes overflow-x compute to `auto` (CSS spec) — and the full-width section headers
-     (flex-basis 100% + 2px side margins) overflow by a few px → a spurious horizontal scrollbar. Clip it;
-     the chips wrap, so there's nothing real to scroll horizontally. */
-  overflow-x: hidden;
-  scrollbar-width: thin;
 }
 /* section header inside the merged Combat drill-down: full-width forces a line break → grouped sections */
 .rel-subhead {
