@@ -20,25 +20,31 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 const DEFAULT_TOP = "57vh"
 const DEFAULT_RIGHT = "6vw"
 
-// The default box fills the right-hand column: a fixed-width panel anchored to the player-portrait column on
-// the right and the playback controls at the bottom. It is measured only from STABLE layout — deliberately
-// NOT the `.game-dps-meter` (battle-stats) pane, which is FIGHT-only AND collapsible: keying the left/top off
-// it made the box jump between opens (open during town → fallback spot; seek into a fight, reopen → shifted
-// right to align with the battle stats). Anchoring to `#game-players` (right) + `.replay-controls` (bottom)
-// only, with a fixed width and a constant top, keeps every open in the same place. GAP ≈ the breathing room
-// the game leaves between panes. Returns null if the anchors aren't on screen yet (→ the fallback dock applies).
-const GAP = 8
-const DEFAULT_WIDTH = 360
+// The default box fills the empty region to the RIGHT of the playback bar and ABOVE the shop, mirroring the
+// gap the game leaves between the playback bar and the shop on all four sides: left → the playback control
+// bar, right → the player-portrait column, top → the (unexpanded) battle-stats panel, bottom → the shop's
+// level pill. Every anchor is stable across the match EXCEPT the battle stats (`.game-dps-meter`), which is
+// FIGHT-only — in town its top falls back to a matching constant (~the same y, so the box barely moves). We
+// read the collapsed battle-stats bottom; if a user has expanded it the box just opens a little lower. The
+// gap is measured (shop.top − bar.bottom) so it tracks the game's responsive scaling; clamped for safety.
+// Returns null until the stable anchors are on screen (→ the CSS fallback dock applies).
+const clampGap = (v: number) => Math.max(4, Math.min(40, v))
 function measureDefaultBox(): { left: number; top: number; width: number; height: number } | null {
   if (typeof document === "undefined") return null
-  const players = document.querySelector("#game-players")?.getBoundingClientRect()
-  const bar = document.querySelector(".replay-controls")?.getBoundingClientRect()
-  if (!players || !bar) return null
-  const rightEdge = players.left - GAP
-  const left = Math.round(rightEdge - DEFAULT_WIDTH)
-  const top = Math.round(window.innerHeight * 0.12)
-  const width = Math.max(240, rightEdge - left)
-  const height = Math.max(140, Math.round(bar.top - GAP - top))
+  const rect = (sel: string) => document.querySelector(sel)?.getBoundingClientRect()
+  const players = rect("#game-players")
+  const controls = rect(".replay-controls")
+  const shop = rect(".game-pokemons-store")
+  if (!players || !controls || !shop) return null
+  const levelPill = rect(".game-experience > span") // the "Lvl N" pill on the shop bar
+  const dps = rect(".game-dps-meter") // battle-stats panel — FIGHT-only
+  const gap = clampGap(Math.round(shop.top - controls.bottom))
+  const left = Math.round(controls.right + gap)
+  const right = Math.round(players.left - gap)
+  const top = Math.round(dps ? dps.bottom + gap : window.innerHeight * 0.11)
+  const bottom = Math.round((levelPill ?? shop).top - gap)
+  const width = Math.max(240, right - left)
+  const height = Math.max(140, bottom - top)
   return { left, top, width, height }
 }
 

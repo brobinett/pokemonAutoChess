@@ -126,6 +126,10 @@
   border-bottom: 1px dashed rgba(255, 255, 255, 0.12);
   max-height: 22vh;
   overflow-y: auto;
+  /* overflow-y:auto makes overflow-x compute to `auto` (CSS spec) — and the full-width section headers
+     (flex-basis 100% + 2px side margins) overflow by a few px → a spurious horizontal scrollbar. Clip it;
+     the chips wrap, so there's nothing real to scroll horizontally. */
+  overflow-x: hidden;
   scrollbar-width: thin;
 }
 /* section header inside the merged Combat drill-down: full-width forces a line break → grouped sections */
@@ -170,6 +174,7 @@
   border-bottom: 1px dashed rgba(255, 255, 255, 0.12);
   max-height: 22vh;
   overflow-y: auto;
+  overflow-x: hidden; /* same spurious-horizontal-bar fix as .rel-subfilters */
   scrollbar-width: thin;
 }
 .rel-pchip {
