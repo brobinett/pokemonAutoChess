@@ -733,7 +733,9 @@ function RecordingSummary({
       {summary ? (
         <RowSummary summary={summary} />
       ) : (
-        <span className="replay-row-meta">{t("replay.library.no_summary")}</span>
+        // Same reserved height as a team row (.replay-row-summary) so a summary-less recording (an old file,
+        // or a very-early disconnect) is the same height as a normal one — no short/mismatched row.
+        <span className="replay-row-meta replay-row-summary">{t("replay.library.no_summary")}</span>
       )}
     </div>
   )
@@ -967,7 +969,7 @@ function ReplayLibrary({
             actions={
               <>
                 <button className="bubbly blue replay-row-btn" onClick={playPreview}>
-                  ▶ {t("replay.library.play")}
+                  ▶ {t("replay.library.watch")}
                 </button>
                 <button
                   className="bubbly replay-row-btn"
