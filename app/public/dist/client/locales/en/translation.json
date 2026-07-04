@@ -5073,15 +5073,16 @@
 			"no_summary": "No preview for this recording"
 		},
 		"about": {
-			"title": "Limitations of browser-recorded replays",
+			"title": "About browser-recorded replays",
 			"storage": "Your replays are saved in this browser, not in the cloud. Download any you want to keep.",
 			"storage_detail": "They stay on this device only and aren't backed up or synced. Clearing your browser data deletes them, and a replay made in a private window is gone once you close it.",
-			"recording_title": "Recorded from one player's view",
-			"rec_shop": "Only your own shop is recorded. Other players' shops are hidden, so a rival buying a unit just shows as \"gained.\"",
-			"rec_combat": "Combat casts and damage follow the board on screen. Scout another board mid-fight and you catch its casts but miss your own.",
-			"rec_income": "Only your own income breakdown (base, interest, streak) is recorded.",
-			"rec_gap": "If your connection drops while recording, that stretch of the match is missing.",
-			"playback_title": "How playback works",
+			"recording_title": "Recording limitations",
+			"rec_intro": "Replays are recorded from one player's point of view. This means that:",
+			"rec_shop": "Only the recording player's shop is captured \u2014 other players' shops are hidden, so a rival buying a unit shows only as \"gained.\"",
+			"rec_combat": "Combat casts and damage follow whichever board is on screen, so scouting another board mid-fight catches its casts but misses the recording player's own.",
+			"rec_income": "Only the recording player's income breakdown (base, interest, streak) is captured.",
+			"rec_gap": "If the connection drops mid-game, that stretch of the match is missing from the recording.",
+			"playback_title": "Playback limitations",
 			"play_rebuild": "The match is rebuilt from saved game data, not from a video.",
 			"play_sound": "Sound plays live from your game: region music and the usual chimes, at your own volume. There are no combat sound effects to record.",
 			"play_speed": "The speed control changes how fast the match advances. Animations always play at normal speed, so higher speeds look choppier than a smooth fast-forward."

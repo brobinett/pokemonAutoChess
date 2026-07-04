@@ -428,11 +428,13 @@
 /* file picker: a drop zone inside the card + a .bubbly "choose a file" button over a hidden input */
 .replay-dropzone {
   margin-top: 0.4em;
-  padding: 1.3em 1.6em;
+  /* Compact vertical padding so the dropzone's natural height matches a loaded preview / library row
+     (they share the RecordingSummary presentation) — the pick slot floors both to the same height. */
+  padding: 0.55em 1.6em;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.9em;
+  gap: 0.55em;
   border: 3px dashed var(--color-bg-tertiary);
   border-radius: 12px;
   transition:
@@ -507,7 +509,7 @@
 .replay-landing-left .replay-pick-slot {
   display: flex;
   flex-direction: column;
-  min-height: 132px;
+  min-height: 96px;
 }
 .replay-landing-left .replay-pick-slot > .replay-dropzone {
   flex: 1;

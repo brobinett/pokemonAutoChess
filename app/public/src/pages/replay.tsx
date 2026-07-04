@@ -995,6 +995,7 @@ function ReplayLibrary({
               <div className="replay-limitations-subtitle">
                 {t("replay.about.recording_title")}
               </div>
+              <p>{t("replay.about.rec_intro")}</p>
               <ul>
                 <li>{t("replay.about.rec_shop")}</li>
                 <li>{t("replay.about.rec_combat")}</li>
