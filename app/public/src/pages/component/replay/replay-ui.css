@@ -473,6 +473,13 @@
      viewport so a short screen scrolls instead of clipping (the overlay is overflow-y: auto). */
   min-height: min(880px, 86vh);
 }
+/* The game's .my-container padding is asymmetric (0.25em top/bottom, 0.5em left/right), which left the
+   back-to-lobby button with a smaller top inset than its left. Even it out (this card is roomy, so a
+   symmetric inset reads better) — the .my-container qualifier beats the base rule by specificity. The larger
+   gap DOWN to the content is separate (the header's own margin-bottom), a deliberate section break. */
+.replay-library-card.my-container {
+  padding: 0.5em;
+}
 
 /* /replay landing — two columns: dropzone + limitations on the LEFT, the recordings list (scrollable) on
    the RIGHT. Widened from the old single 600px column so the recordings have room and the empty space is
