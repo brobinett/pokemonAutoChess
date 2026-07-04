@@ -472,6 +472,10 @@
      for now (few saved games + not-yet-final limitations copy); the copy pass will fill it. Capped to the
      viewport so a short screen scrolls instead of clipping (the overlay is overflow-y: auto). */
   min-height: min(880px, 86vh);
+  /* Cap the card to the same height (not just a floor) so a long recordings list scrolls INSIDE it instead
+     of growing the card off the bottom of the page. The list is the one part that scrolls (see the flex
+     chain + .replay-landing-cols grid-template-rows); the columns fit within this height. */
+  max-height: min(880px, 86vh);
 }
 /* The game's .my-container padding is asymmetric (0.25em top/bottom, 0.5em left/right), which left the
    back-to-lobby button with a smaller top inset than its left. Even it out (this card is roomy, so a
@@ -505,6 +509,9 @@
      sized wide enough that a full-size team fits on one line in both (see .replay-library-card). minmax(0,1fr)
      (not 1fr) forces them to STAY equal — a plain 1fr floors at min-content, so a wider column would win. */
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  /* One row, constrained to the grid's own height (minmax(0,1fr), NOT the default content-sized `auto`) so a
+     tall recordings list scrolls within the cell instead of stretching the row → the card → off the page. */
+  grid-template-rows: minmax(0, 1fr);
   gap: 1.8em;
   width: 100%;
   /* stretch so both columns share the taller one's height */
