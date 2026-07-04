@@ -510,6 +510,10 @@
   /* stretch so both columns share the taller one's height */
   align-items: stretch;
   text-align: left;
+  /* fill the card's remaining height (the card has a min-height, so without this the columns sit at their
+     natural content height and leave whitespace below — which cut the recordings list off partway down) */
+  flex: 1;
+  min-height: 0;
 }
 .replay-landing-left {
   order: -1; /* renders in the LEFT column (before the recordings, which come first in source) */
@@ -540,9 +544,19 @@
 .replay-landing-left .replay-dropzone {
   justify-content: center;
 }
-/* the recordings column scrolls within a capped height so a full keep-20 library never blows out the card */
+/* The recordings list fills the right column down to the card bottom (rather than a fixed cap that left it
+   cut off ~2/3 down), scrolling internally when there are more rows than fit. The flex chain: the column and
+   the .replay-library both stretch, and the list takes the remaining space between the header and keep-hint.
+   min-height:0 lets the scroll area shrink below its content (else flex refuses to scroll). */
+.replay-landing-right {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .replay-landing-right .replay-library-list {
-  max-height: 46vh;
+  flex: 1;
+  min-height: 0;
+  max-height: none;
 }
 /* Limitations blurb inside the left column (under the picker): fills the column width — no 42em cap that would
    leave the text narrower than the column. The base .replay-limitations rule supplies the divider + type. */
@@ -553,6 +567,11 @@
 .replay-library {
   width: 100%;
   text-align: left;
+  /* fill the right column so the list (flex:1 below) can stretch to the card bottom */
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .replay-library-head {
   display: flex;
