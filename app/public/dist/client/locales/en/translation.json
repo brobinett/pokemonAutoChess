@@ -5113,9 +5113,7 @@
 				"stats_all": "Stats"
 			},
 			"phase": {
-				"pick": "Pick",
-				"fight": "Fight",
-				"town": "Town"
+				"pick": "Pick"
 			},
 			"row": {
 				"phase": "Stage {{stage}} · {{phase}}",
@@ -5131,7 +5129,6 @@
 				"reroll": "Reroll ({{gold}})",
 				"shop_refresh": "Shop refresh",
 				"xp": "Bought {{amount}} XP ({{gold}})",
-				"egg": "Laid an egg",
 				"egg_named": "Laid {{pkm}} egg",
 				"egg_golden": "Laid golden {{pkm}} egg",
 				"fish": "Fished {{pkm}}",
@@ -5175,7 +5172,6 @@
 				"game_start": "Game start",
 				"game_over": "Game over",
 				"cooked": "Cooked {{dishes}}",
-				"cooked_dish": "Cooked a dish",
 				"dig": "Dug{{where}}{{found}}",
 				"dig_site": " ({{x}},{{y}}) depth {{depth}}",
 				"dig_treasure": " · {{item}}",

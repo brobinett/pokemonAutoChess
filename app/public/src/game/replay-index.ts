@@ -505,7 +505,7 @@ function derivePlayerStateEvents(
           if (name === Pkm.EGG) {
             const egg = p.board.get(id)
             const hatchPkm = egg?.evolution && egg.evolution !== Pkm.DEFAULT ? egg.evolution : ""
-            push("egg", hatchPkm ? { pkm: hatchPkm, golden: !!egg?.shiny } : {})
+            push("egg", { pkm: hatchPkm, golden: !!egg?.shiny })
           } else if (p.board.get(id)?.action === PokemonActionState.FISH) {
             push("fish", { pkm: name })
           } else {

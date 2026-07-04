@@ -82,10 +82,16 @@ export const statLabel = (t: TFunction, field: string): string => {
 
 // Phase token (PICK / FIGHT / TOWN, from the index segments) → localized word for the "Stage N · Phase"
 // row. Unknown values pass through (defensive; the enum is stable).
-const PHASE_KEY: Record<string, "pick" | "fight" | "town"> = { PICK: "pick", FIGHT: "fight", TOWN: "town" }
+// Phase words reuse the game's own "Fight" / "Town" (already translated) instead of replay.* duplicates;
+// only "Pick" has no clean existing key, so it keeps a replay key. Full i18n paths so the typed t() stays valid.
+const PHASE_KEY: Record<string, "replay.eventlog.phase.pick" | "fight" | "wiki.nav.town_label"> = {
+  PICK: "replay.eventlog.phase.pick",
+  FIGHT: "fight",
+  TOWN: "wiki.nav.town_label"
+}
 export const phaseWord = (t: TFunction, label: string): string => {
   const k = PHASE_KEY[label]
-  return k ? t(`replay.eventlog.phase.${k}`) : label
+  return k ? t(k) : label
 }
 
 // Signed gold delta with the in-game "g" unit, e.g. "+2g" / "-3g". (The unit stays "g" across locales —
@@ -138,11 +144,10 @@ export function formatReplayEvent(t: TFunction, ev: { type: string; a?: ReplayEv
       return a.gold != null ? t(`${R}.reroll`, { gold: goldStr(Number(a.gold)) }) : t(`${R}.shop_refresh`)
     case "xp": return t(`${R}.xp`, { amount: Number(a.amount), gold: goldStr(Number(a.gold)) })
     case "egg":
-      return a.pkm
-        ? a.golden
-          ? t(`${R}.egg_golden`, { pkm: pkmName(t, String(a.pkm)) })
-          : t(`${R}.egg_named`, { pkm: pkmName(t, String(a.pkm)) })
-        : t(`${R}.egg`)
+      // A laid egg always carries its hatch species (set at creation), so we always name it.
+      return a.golden
+        ? t(`${R}.egg_golden`, { pkm: pkmName(t, String(a.pkm)) })
+        : t(`${R}.egg_named`, { pkm: pkmName(t, String(a.pkm)) })
     case "fish": return t(`${R}.fish`, { pkm: pkmName(t, String(a.pkm)) })
     case "gained": return t(`${R}.gained`, { pkm: pkmName(t, String(a.pkm)) })
     case "item": return t(`${R}.got_item`, { item: itemName(t, String(a.item)) })
@@ -266,10 +271,9 @@ export function formatMessageRow(t: TFunction, type: string, payload: unknown, i
       case "LOADING_COMPLETE": return t(`${R}.game_start`)
       case "GAME_END": return t(`${R}.game_over`)
       case "COOK": {
+        // COOK is only broadcast when the chef produced ≥1 dish, so we always list them.
         const o = p as { dishes?: string[] }
-        return Array.isArray(o?.dishes) && o.dishes.length
-          ? t(`${R}.cooked`, { dishes: o.dishes.map((d) => itemName(t, d)).join(", ") })
-          : t(`${R}.cooked_dish`)
+        return t(`${R}.cooked`, { dishes: (Array.isArray(o?.dishes) ? o.dishes : []).map((d) => itemName(t, d)).join(", ") })
       }
       case "DIG": {
         // One composable "dig" row (income-style fragments): optional site + optional treasure.
