@@ -838,7 +838,7 @@ function ReplayLibrary({
           className="bubbly replay-back-btn"
           onClick={() => navigate("/lobby")}
         >
-          ← {t("replay.back_to_lobby")}
+          ← {t("back_to_lobby")}
         </button>
         <div className="replay-overlay-title">{t("replay.library.title")}</div>
 
