@@ -834,13 +834,15 @@ function ReplayLibrary({
           if (f) previewFile(f)
         }}
       >
-        <button
-          className="bubbly replay-back-btn"
-          onClick={() => navigate("/lobby")}
-        >
-          ← {t("back_to_lobby")}
-        </button>
-        <div className="replay-overlay-title">{t("replay.library.title")}</div>
+        <div className="replay-landing-header">
+          <button
+            className="bubbly blue replay-back-btn"
+            onClick={() => navigate("/lobby")}
+          >
+            {t("back_to_lobby")}
+          </button>
+          <div className="replay-overlay-title">{t("replay.library.title")}</div>
+        </div>
 
         <div className="replay-landing-cols">
           <div className="replay-landing-right">

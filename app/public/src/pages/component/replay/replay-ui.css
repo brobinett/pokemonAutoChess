@@ -477,22 +477,27 @@
 /* /replay landing — two columns: dropzone + limitations on the LEFT, the recordings list (scrollable) on
    the RIGHT. Widened from the old single 600px column so the recordings have room and the empty space is
    used. The card title left-aligns as a header above both columns. */
-.replay-library-card .replay-overlay-title {
-  align-self: flex-start;
+/* Landing header: back-to-lobby button on the left + the "Watch a replay" title centered on the SAME line
+   (1fr auto 1fr → the title is card-centered; the button sits in the left 1fr). No extra top row of space. */
+.replay-landing-header {
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 0.5em;
   margin-bottom: 0.6em;
 }
-/* Back-to-lobby control, top-left of the landing card (the /replay page has no game sidebar to leave from). */
+/* Same as the bot-builder's back button (default `bubbly blue`, no arrow); only positioned in the grid. */
 .replay-back-btn {
-  align-self: flex-start;
+  justify-self: start;
   margin: 0;
-  padding: 0.3em 0.8em;
-  font-size: 0.82em;
 }
 .replay-landing-cols {
   display: grid;
   /* even columns — the picker/limitations (left) and recordings (right) read as a balanced pair; the card is
-     sized wide enough that a full-size team fits on one line in both (see .replay-library-card) */
-  grid-template-columns: 1fr 1fr;
+     sized wide enough that a full-size team fits on one line in both (see .replay-library-card). minmax(0,1fr)
+     (not 1fr) forces them to STAY equal — a plain 1fr floors at min-content, so a wider column would win. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 1.8em;
   width: 100%;
   /* stretch so both columns share the taller one's height */
@@ -672,7 +677,7 @@
 }
 .replay-library-empty {
   padding: 1em 0.5em;
-  text-align: center;
+  text-align: left;
   font-size: 0.9em;
   color: var(--color-fg-secondary);
 }
