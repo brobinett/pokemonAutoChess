@@ -143,6 +143,16 @@ const COMBAT_SUBKEY: Record<string, CombatSubKey> = {
   BOARD_EVENT: "board_effects",
   WEATHER: "weather"
 }
+// Sub-chip label → i18n key. "Ability" / "Weather" reuse existing game strings (already translated) instead
+// of replay.* duplicates, matching the CAT_LABEL_KEY approach; the rest keep replay keys.
+const SUB_LABEL_KEY = {
+  casts: "wiki.pokemons.ability_label",
+  damage: "replay.eventlog.sub.damage",
+  heals: "replay.eventlog.sub.heals",
+  text: "replay.eventlog.sub.text",
+  board_effects: "replay.eventlog.sub.board_effects",
+  weather: "wiki.nav.weather_label"
+} as const satisfies Record<CombatSubKey, string>
 // Drill-down sections for the merged Combat chip. The source note honors the real distinction: casts/damage/
 // heal/text are broadcastToSpectators (only the board the recorder was watching), while board effects,
 // weather, status and stats are recovered for every board (owner-tagged). The `combat` category is split
@@ -155,6 +165,14 @@ const COMBAT_SECTIONS: { cat: Category; labelKey: SectionKey; only?: string[] }[
   { cat: "status", labelKey: "status_all" },
   { cat: "stats", labelKey: "stats_all" }
 ]
+// Section header → i18n key. "Status" / "Stats" reuse existing game strings; the two composite headers keep
+// replay keys.
+const SECTION_LABEL_KEY = {
+  casts_pov: "replay.eventlog.section.casts_pov",
+  board_weather: "replay.eventlog.section.board_weather",
+  status_all: "status_label",
+  stats_all: "stats"
+} as const satisfies Record<SectionKey, string>
 
 const DEFAULT_ON: Record<Category, boolean> = {
   combat: false, // ~92% of all rows (per-tick ability/damage/heal) — buries the match story; opt-in
@@ -709,7 +727,7 @@ export default function ReplayEventLog({
                 if (!subs.length) return null
                 return (
                   <Fragment key={sec.labelKey}>
-                    <span className="rel-subhead">{t(`replay.eventlog.section.${sec.labelKey}`)}</span>
+                    <span className="rel-subhead">{t(SECTION_LABEL_KEY[sec.labelKey])}</span>
                     {subs.map((sub) =>
                       renderSubchip(
                         sec.cat,
@@ -721,7 +739,7 @@ export default function ReplayEventLog({
                           : sec.cat === "stats"
                             ? statLabel(t, sub)
                             : COMBAT_SUBKEY[sub]
-                              ? t(`replay.eventlog.sub.${COMBAT_SUBKEY[sub]}`)
+                              ? t(SUB_LABEL_KEY[COMBAT_SUBKEY[sub]])
                               : prettyName(sub)
                       )
                     )}

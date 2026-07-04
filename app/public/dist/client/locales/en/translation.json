@@ -5099,18 +5099,14 @@
 				"engine": "Engine"
 			},
 			"sub": {
-				"casts": "Ability",
 				"damage": "Damage",
 				"heals": "Healing",
 				"text": "Text",
-				"board_effects": "Board effects",
-				"weather": "Weather"
+				"board_effects": "Board effects"
 			},
 			"section": {
 				"casts_pov": "Ability / damage / healing",
-				"board_weather": "Board effects / weather",
-				"status_all": "Status",
-				"stats_all": "Stats"
+				"board_weather": "Board effects / weather"
 			},
 			"phase": {
 				"pick": "Pick"
