@@ -516,14 +516,17 @@
 .replay-landing-left .replay-dropzone {
   margin-top: 0;
 }
-/* The dropzone and a loaded preview share this slot. Both render at their NATURAL height — the preview (a
-   .replay-row) matches a library row, and the dropzone hugs its own compact content — so neither is forced
-   taller than the other (an earlier fixed floor + flex-fill made the dropzone stretch past the row height in
-   some browsers' font metrics). No jitter floor is needed: the long limitations blurb below dominates the
-   column height, so swapping dropzone ↔ preview doesn't meaningfully move the card. */
+/* The dropzone and a loaded preview share this slot, floored to a library-row height so the empty dropzone,
+   a loaded preview (with OR without a team — see the .replay-row-summary min-height, which reserves the
+   team-line height so a no-team recording's row is the same height as a full one), and the saved rows all
+   read as the same height. The dropzone fills the slot; swapping dropzone ↔ preview doesn't jitter. */
 .replay-landing-left .replay-pick-slot {
   display: flex;
   flex-direction: column;
+  min-height: 101px;
+}
+.replay-landing-left .replay-pick-slot > .replay-dropzone {
+  flex: 1;
 }
 /* center the dropzone's own content vertically in that slot (it's a flex COLUMN, so this is the block axis;
    the preview row keeps its default row justify-content: space-between) */
@@ -634,6 +637,10 @@
   margin-top: 4px;
   flex-wrap: nowrap; /* keep the team on ONE line; portraits shrink-to-fit rather than wrap (see below) */
   min-width: 0;
+  /* Reserve the team-portrait height (38px) even when the recording has no deployed team (e.g. an early
+     leave with an empty board — the summary is just "Top N"). Keeps every row the same height, so a no-team
+     preview matches a full one and the dropzone, and there's no jump when such a file loads. */
+  min-height: 38px;
 }
 /* placement as plain "Top N" text, matching the profile match history (.game-history .top) — not a pill */
 .replay-rank {
